@@ -1,0 +1,709 @@
+/* Landing Page Styles */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.logo img {
+  padding-top: 2px;
+  padding-right: 8px;
+  width: 56px;      /* slightly larger for better visibility */
+  height: 56px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  color: #e6ffe6; /* pale green text on black */
+  background-color: #000; /* global black background */
+}
+
+/* Navigation Bar */
+.navbar {
+  background: #000; /* changed to solid black */
+  color: white;
+  padding: 1rem 0;
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+  box-shadow: 0 2px 10px rgba(255, 255, 255, 0.03);
+}
+
+.navbar-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 2rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  font-size: 1.4rem;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+
+.logo span {
+  color: #fff;
+  margin-left: 0.4rem;
+}
+
+.nav-links {
+  display: flex;
+  gap: 2rem;
+  align-items: center;
+}
+
+.nav-link {
+  color: white;
+  text-decoration: none;
+  transition: opacity 0.3s ease;
+}
+
+.nav-link:hover {
+  opacity: 0.8;
+}
+
+.btn-login {
+  background: transparent;
+  color: #22c55e;
+  border: 2px solid rgba(34,197,94,0.16);
+  padding: 0.55rem 1.2rem;
+  border-radius: 20px;
+  cursor: pointer;
+  font-weight: 800;
+  transition: all 0.22s ease;
+}
+
+.btn-login:hover {
+  background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
+  color: #072014;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(34,197,94,0.12);
+}
+
+/* Hero Section */
+.hero {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3rem;
+  align-items: center;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 6rem 2rem;
+  min-height: 70vh;
+  background: #000; /* hero background set to black */
+  color: #e6ffe6; /* default pale green text for readability */
+}
+
+.hero-content {
+  animation: slideInLeft 0.8s ease-out;
+}
+
+.hero-title {
+  font-size: 3.5rem;
+  font-weight: bold;
+  margin-bottom: 1.5rem;
+  line-height: 1.2;
+  color: #d1ffd6; /* pale green title on black */
+}
+
+.hero-subtitle {
+  font-size: 1.3rem;
+  color: #9aaebb; /* muted slate for subtitle on dark bg */
+  margin-bottom: 2rem;
+  line-height: 1.6;
+}
+
+.hero-subtext {
+  font-size: 0.9rem;
+  color: #9aaebb;
+  margin-top: 1rem;
+}
+
+.hero-image {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  animation: slideInRight 0.8s ease-out;
+}
+
+.security-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.95;
+  animation: float 3s ease-in-out infinite;
+}
+
+.security-icon-img {
+  width: 220px;
+  height: 220px;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+/* Make the hero primary button match the black/green theme */
+.hero .btn-primary {
+  background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
+  box-shadow: 0 10px 30px rgba(34,197,94,0.18);
+}
+
+/* Buttons */
+.btn-primary {
+  background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
+  color: #072014;
+  border: none;
+  padding: 1rem 2rem;
+  border-radius: 30px;
+  font-size: 1rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: transform 0.22s ease, box-shadow 0.22s ease;
+  box-shadow: 0 8px 25px rgba(34,197,94,0.08);
+}
+
+.btn-primary:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 18px 40px rgba(34,197,94,0.14);
+}
+
+.btn-secondary {
+  background: transparent;
+  color: #22c55e; /* green text on dark bg */
+  border: 2px solid rgba(34,197,94,0.18);
+  padding: 0.8rem 1.8rem;
+  border-radius: 25px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.22s ease;
+}
+
+.btn-secondary:hover {
+  background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
+  color: #072014; /* dark text on filled green */
+  transform: translateY(-3px);
+  box-shadow: 0 10px 30px rgba(34,197,94,0.12);
+}
+
+.btn-large {
+  padding: 1.2rem 2.5rem;
+  font-size: 1.1rem;
+}
+
+/* Features Section (dark theme to match hero) */
+.features {
+  background: #000; /* dark background */
+  padding: 5rem 2rem;
+}
+
+.features h2 {
+  text-align: center;
+  font-size: 2.5rem;
+  margin-bottom: 3rem;
+  color: #d1ffd6; /* pale green */
+}
+
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 2rem;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.feature-card {
+  background: linear-gradient(180deg, #071018 0%, #0b0b0b 100%);
+  padding: 2rem;
+  border-radius: 15px;
+  text-align: center;
+  transition: all 0.3s ease;
+  border: 1px solid rgba(255,255,255,0.03);
+  box-shadow: 0 6px 18px rgba(2,8,12,0.6);
+}
+
+.feature-card:hover {
+  transform: translateY(-6px);
+  border-color: rgba(34,197,94,0.12);
+  box-shadow: 0 18px 36px rgba(34,197,94,0.06);
+}
+
+.feature-icon {
+  font-size: 3rem;
+  margin-bottom: 1rem;
+  color: #8aff7a;
+}
+
+.feature-card h3 {
+  font-size: 1.3rem;
+  margin-bottom: 1rem;
+  color: #e6ffe6;
+}
+
+.feature-card p {
+  color: #9aaebb;
+  line-height: 1.6;
+}
+
+/* System Workflow (Overview) — horizontal workflow panel */
+.how-it-works {
+  background: linear-gradient(180deg, rgba(3,6,8,1) 0%, rgba(8,12,10,1) 100%);
+  padding: 6rem 2rem 3rem;
+}
+
+.how-it-works h2 {
+  text-align: left;
+  font-size: 1.8rem;
+  margin: 0 0 0.4rem 2rem;
+  color: #e6ffe6;
+  font-weight: 800;
+}
+
+.how-it-works .workflow-subtitle {
+  margin: 0 0 1.6rem 2rem;
+  color: #9aaebb;
+  font-size: 0.98rem;
+  max-width: 1100px;
+}
+
+.steps-container {
+  max-width: 1200px;
+  margin: 0.6rem auto 0;
+  padding: 1.6rem 1.4rem;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(0,0,0,0.55), rgba(2,6,8,0.6));
+  border: 1px solid rgba(255,255,255,0.02);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+}
+
+.workflow-step {
+  flex: 0 0 150px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  text-align: center;
+}
+
+.workflow-step .icon-tile {
+  width: 72px;
+  height: 72px;
+  border-radius: 12px;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.6);
+}
+
+.workflow-step .icon-tile img {
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+}
+
+.workflow-step h4 {
+  margin: 0;
+  color: #e6ffe6;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.workflow-step p {
+  margin: 0;
+  color: #9aaebb;
+  font-size: 0.85rem;
+}
+
+.connector {
+  flex: 0 0 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.connector .dash {
+  width: 36px;
+  height: 2px;
+  background: linear-gradient(90deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+  border-radius: 2px;
+  position: relative;
+}
+
+.connector .dash:before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: -6px;
+  width: 8px;
+  height: 8px;
+  background: transparent;
+}
+
+@media (max-width: 1024px) {
+  .steps-container {
+    gap: 0.6rem;
+    padding: 1rem;
+  }
+
+  .workflow-step { flex: 0 0 120px; }
+}
+
+@media (max-width: 768px) {
+  .how-it-works h2,
+  .how-it-works .workflow-subtitle { text-align: center; margin-left: 0; }
+
+  .steps-container {
+    flex-direction: column;
+    align-items: center;
+    padding: 1rem;
+  }
+
+  .connector { transform: rotate(90deg); margin: 8px 0; }
+}
+
+/* Pricing Section (black/green theme) */
+.pricing {
+  background: linear-gradient(180deg, #020405 0%, #060809 100%);
+  padding: 5rem 2rem;
+}
+
+.pricing h2 {
+  text-align: left;
+  font-size: 1.9rem;
+  margin: 0 0 1rem 2rem;
+  color: #e6ffe6;
+  font-weight: 800;
+}
+
+.pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1.6rem;
+  max-width: 1200px;
+  margin: 1.2rem auto 0;
+}
+
+.pricing-card {
+  background: linear-gradient(180deg, #071018, #0b0b0b);
+  border: 1px solid rgba(255,255,255,0.03);
+  border-radius: 14px;
+  padding: 2rem;
+  text-align: center;
+  transition: transform 0.22s ease, box-shadow 0.22s ease;
+  position: relative;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+}
+
+.pricing-card:hover {
+  transform: translateY(-8px);
+  box-shadow: 0 22px 50px rgba(2,8,6,0.6);
+  border-color: rgba(34,197,94,0.08);
+}
+
+.pricing-card.premium {
+  border-color: rgba(34,197,94,0.12);
+  transform: translateY(-6px) scale(1.02);
+}
+
+.pricing-card.premium .btn-primary {
+  margin-top: 1.2rem;
+}
+
+.badge {
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
+  color: #072014;
+  padding: 0.45rem 0.9rem;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.pricing-card h3 {
+  font-size: 1.25rem;
+  margin-bottom: 0.6rem;
+  color: #e6ffe6;
+}
+
+.price {
+  font-size: 2rem;
+  font-weight: 800;
+  color: #22c55e; /* green */
+  margin-bottom: 1rem;
+}
+
+.price span {
+  font-size: 0.8rem;
+  color: #9aaebb;
+}
+
+.pricing-features {
+  list-style: none;
+  margin-bottom: 1.4rem;
+  text-align: left;
+}
+
+.pricing-features li {
+  padding: 0.6rem 0;
+  border-bottom: 1px solid rgba(255,255,255,0.02);
+  color: #9aaebb;
+}
+
+.pricing-features li:last-child {
+  border-bottom: none;
+}
+
+/* Make pricing card buttons filled green for stronger CTA */
+.pricing-card .btn-primary,
+.pricing-card .btn-secondary {
+  background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
+  color: white;
+  border: none;
+  padding: 0.9rem 1.6rem;
+  border-radius: 999px;
+  font-weight: 800;
+  box-shadow: 0 10px 30px rgba(34,197,94,0.12);
+}
+
+.pricing-card .btn-primary:hover,
+.pricing-card .btn-secondary:hover {
+  background: linear-gradient(135deg, #13803d 0%, #16a34a 100%);
+  transform: translateY(-3px);
+  box-shadow: 0 18px 40px rgba(34,197,94,0.16);
+}
+
+.pricing-card .btn-secondary {
+  /* ensure secondary matches visual weight but slightly smaller */
+  padding: 0.75rem 1.4rem;
+}
+
+/* CTA Section (dark / black-green) */
+.cta-section {
+  background: linear-gradient(180deg, #030506 0%, #070808 100%);
+  color: #e6ffe6;
+  padding: 4.5rem 2rem;
+  text-align: center;
+  border-top: 1px solid rgba(255,255,255,0.02);
+}
+
+.cta-section h2 {
+  font-size: 2rem;
+  margin-bottom: 0.6rem;
+  color: #dfffe0;
+  font-weight: 800;
+}
+
+.cta-section p {
+  font-size: 1rem;
+  margin-bottom: 1.4rem;
+  color: #9aaebb;
+}
+
+.cta-section .btn-primary.btn-large {
+  padding: 1rem 2.6rem;
+  font-size: 1.05rem;
+}
+
+/* CTA-specific button: filled green with white text for strong contrast */
+.cta-section .btn-primary.btn-large {
+  background: linear-gradient(135deg, #16a34a 0%, #059669 100%);
+  color: #ffffff;
+  box-shadow: 0 20px 50px rgba(6,95,70,0.18);
+  border: none;
+}
+
+.cta-section .btn-primary.btn-large:hover {
+  background: linear-gradient(135deg, #13803d 0%, #16a34a 100%);
+  transform: translateY(-3px);
+  box-shadow: 0 28px 60px rgba(6,95,70,0.22);
+}
+
+/* Footer */
+.footer {
+  background: linear-gradient(180deg, #030506 0%, #070808 100%);
+  color: #e6ffe6;
+  padding: 2.5rem 2rem 2rem;
+}
+
+.footer-content {
+  display: grid;
+  /* keep flexible columns but allow tighter layout for the empty column */
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem; /* reduced gap */
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0.6rem 1rem; /* slightly reduced vertical padding */
+  align-items: start;
+}
+
+.footer-section h4 {
+  margin-bottom: 1rem;
+  font-size: 1.1rem;
+}
+
+.footer-section ul {
+  list-style: none;
+}
+
+.footer-section ul li {
+  margin-bottom: 0.5rem;
+}
+
+.footer-section a {
+  color: #aaa;
+  text-decoration: none;
+  transition: color 0.3s ease;
+}
+
+.footer-section a:hover {
+  color: white;
+}
+
+.footer-section p {
+  color: #9aaebb;
+  line-height: 1.6;
+}
+.footer-bottom {
+  text-align: center;
+  padding-top: 1.6rem;
+  border-top: 1px solid rgba(255,255,255,0.03);
+  color: #9aaebb;
+}
+
+/* If a footer column is intentionally empty, collapse its padding so adjacent columns sit closer */
+.footer-content .footer-section:empty {
+  min-width: 36px;
+  padding: 0;
+}
+
+/* Small padding on each section for vertical rhythm without large horizontal gaps */
+.footer-content .footer-section {
+  padding: 0 0.4rem;
+}
+
+/* Nudge the Product column slightly to the right for better alignment */
+.footer-product {
+  /* move Product column right slightly to sit between Security and Contact */
+  padding-left: 1rem; /* a bit more left padding for visual balance */
+  margin-left: 12px; /* nudge right by 12px */
+}
+
+@media (max-width: 768px) {
+  .footer-product {
+    margin-left: 0;
+    padding-left: 0.4rem;
+  }
+}
+
+/* Animations */
+@keyframes slideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-50px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(50px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-20px);
+  }
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .hero {
+    grid-template-columns: 1fr;
+    padding: 3rem 1rem;
+    min-height: auto;
+  }
+
+  .hero-title {
+    font-size: 2rem;
+  }
+
+  .hero-subtitle {
+    font-size: 1rem;
+  }
+
+  .security-icon {
+    font-size: 8rem;
+  }
+
+  .navbar-container {
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .nav-links {
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .steps-container {
+    flex-direction: column;
+  }
+
+  .step-arrow {
+    transform: rotate(90deg);
+  }
+
+  .pricing-card.premium {
+    transform: scale(1);
+  }
+
+  .features h2,
+  .how-it-works h2,
+  .pricing h2,
+  .cta-section h2 {
+    font-size: 1.8rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .hero-title {
+    font-size: 1.5rem;
+  }
+
+  .btn-primary,
+  .btn-secondary {
+    padding: 0.8rem 1.5rem;
+    font-size: 0.9rem;
+  }
+
+  .features-grid,
+  .pricing-grid {
+    grid-template-columns: 1fr;
+  }
+}

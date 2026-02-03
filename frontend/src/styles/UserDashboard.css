@@ -1,0 +1,961 @@
+/* User Dashboard Styles */
+
+.dashboard {
+  min-height: 100vh;
+  background: radial-gradient(1000px 400px at 10% 10%, rgba(4,40,20,0.35), transparent), #050505;
+  color: #d8f8de; /* pale green text */
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* Dashboard Header */
+.dashboard-header {
+  background: linear-gradient(135deg, #042f1d 0%, #052b18 60%, rgba(0,0,0,0.5) 100%);
+  color: #d8f8de;
+  padding: 1.5rem 2rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-shadow: 0 8px 30px rgba(2, 8, 6, 0.6);
+  border-bottom: 1px solid rgba(10, 40, 20, 0.25);
+}
+
+.header-left h1 {
+  font-size: 1.9rem;
+  margin-bottom: 0.25rem;
+  color: #bffcc8;
+}
+
+.dashboard-logo {
+  height: 35px;
+  width: 50px;
+  vertical-align: middle;
+  margin-right: 0.6rem;
+  border-radius: 4px;
+}
+
+.header-left p {
+  opacity: 0.85;
+  font-size: 0.95rem;
+  color: #9ef08a;
+}
+
+.header-right {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+}
+
+.subscription-badge {
+  display: flex;
+  align-items: center;
+}
+
+.badge-premium {
+  background: linear-gradient(90deg, rgba(10,90,50,0.18), rgba(10,140,60,0.06));
+  padding: 0.45rem 0.9rem;
+  border-radius: 20px;
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: #cfffda;
+  border: 1px solid rgba(10,140,60,0.12);
+}
+
+/* Free plan badge - match the login CTA style but compact */
+.badge-free {
+  display: inline-block;
+  padding: 0.45rem 0.9rem;
+  background: linear-gradient(135deg, #043914 0%, #0b6623 100%);
+  color: #eaffea;
+  font-weight: 700;
+  font-size: 0.9rem;
+  border-radius: 8px;
+  border: 1px solid rgba(34,197,94,0.12);
+  box-shadow: 0 8px 20px rgba(2, 80, 30, 0.18);
+}
+
+.subscription-badge { display: flex; align-items: center; }
+
+.btn-upgrade {
+  background: linear-gradient(90deg,#00b25b,#07a05a);
+  color: #05110a;
+  border: none;
+  padding: 0.55rem 1.1rem;
+  border-radius: 20px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+  box-shadow: 0 6px 18px rgba(0,178,91,0.12);
+}
+
+/* Add Site button: use same look as login buttons for consistency */
+.btn-add-site {
+  padding: 0.7rem 1.1rem;
+  background: linear-gradient(90deg,#00b25b,#05a85a);
+  color: #02100a;
+  border: none;
+  border-radius: 10px;
+  font-size: 0.92rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  box-shadow: 0 8px 24px rgba(0,178,91,0.12);
+}
+.btn-add-site:hover:not(:disabled) {
+  transform: translateY(-3px);
+  box-shadow: 0 14px 36px rgba(0,178,91,0.18);
+}
+
+/* Request Upgrade button - visually similar to Add Site but distinct */
+.btn-request-upgrade {
+  padding: 0.56rem 0.95rem;
+  background: linear-gradient(90deg,#06b06b,#03a05a);
+  color: #02110a;
+  border: none;
+  border-radius: 10px;
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  box-shadow: 0 8px 22px rgba(0,160,80,0.12);
+}
+.btn-request-upgrade:hover:not(:disabled) {
+  transform: translateY(-3px);
+  box-shadow: 0 16px 40px rgba(0,160,80,0.18);
+}
+
+/* Threats overview container: dark card to match landing page theme */
+.threats-overview {
+  background: linear-gradient(180deg, rgba(6,20,12,0.5), rgba(6,18,12,0.35));
+  padding: 1rem;
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.6), 0 0 30px rgba(0,160,80,0.02) inset;
+  margin-bottom: 1rem;
+  border: 1px solid rgba(10,40,20,0.18);
+}
+
+/* Threat item: dark card with green accent */
+.threat-item {
+  background: linear-gradient(180deg, rgba(4,8,6,0.55), rgba(6,10,8,0.5));
+  color: #d8f8de;
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+  margin-bottom: 0.7rem;
+  border: 1px solid rgba(12,40,22,0.16);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.6);
+  position: relative;
+}
+.threat-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  border-top-left-radius: 10px;
+  border-bottom-left-radius: 10px;
+}
+.threat-item strong {
+  color: #eafff0;
+}
+.threat-item .type-badge {
+  color: #9ef08a;
+  font-weight: 700;
+}
+
+.threat-item .summary {
+  color: #cfeeda;
+}
+.threat-item .prevention {
+  color: #7ff09a;
+}
+
+/* Premium threat card styles */
+.threat-card-premium {
+  background: linear-gradient(180deg, #04101a 0%, #07161d 100%);
+  color: #e6fbe9;
+  border-radius: 12px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 12px 30px rgba(0,0,0,0.6), 0 2px 10px rgba(0,160,80,0.03) inset;
+  border: 1px solid rgba(6,120,70,0.08);
+}
+.threat-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid rgba(10,40,20,0.08);
+  padding-bottom: 0.6rem;
+}
+.threat-card-title { display: flex; align-items: center; gap: 0.6rem; }
+.threat-icon { font-size: 1.1rem; display: inline-block; }
+.title-text { font-size: 1.05rem; color: #fff; }
+.threat-label { display: inline-block; width: 1.2rem; text-align: center; margin-right: 0.35rem; }
+.threat-card-meta { font-size: 0.9rem; color: #9fbfa8; }
+.threat-card-body { padding: 0.8rem 0; color: #dbeee0; }
+.greeting { margin: 0 0 0.5rem 0; color: #bfeccf; }
+.threat-details { list-style: none; padding: 0; margin: 0 0 0.6rem 0; color: #d7f3e0; }
+.threat-details li { padding: 0.18rem 0; border-bottom: 1px dashed rgba(255,255,255,0.02); font-size: 0.95rem; }
+.threat-steps { margin-top: 0.6rem; }
+.steps-list { margin: 0.4rem 0 0 1.2rem; color: #e8f8e8; }
+.steps-list li { margin: 0.3rem 0; }
+.threat-card-footer { display: flex; justify-content: space-between; align-items: center; padding-top: 0.6rem; border-top: 1px solid rgba(10,40,20,0.04); }
+.source { color: #bfeccf; font-style: italic; }
+.status { font-weight: 700; font-size: 0.9rem; }
+.status-sent { color: #9ef08a; }
+.status-info { color: #9fbfa8; }
+
+.btn-upgrade:hover {
+  background: #ffb300;
+  transform: translateY(-2px);
+}
+
+.btn-logout {
+  background: transparent;
+  color: #bffcc8;
+  border: 1px solid rgba(160,255,190,0.08);
+  padding: 0.5rem 1rem;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 700;
+  transition: background 0.15s ease, transform 0.12s ease;
+}
+
+.btn-logout:hover {
+  background: rgba(10,140,60,0.08);
+  transform: translateY(-2px);
+}
+
+/* Tabs */
+.tabs {
+  background: transparent;
+  padding: 0;
+  display: flex;
+  border-bottom: 1px solid rgba(20,40,25,0.12);
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.tab {
+  flex: 1;
+  padding: 1rem 1.2rem;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #9edfa6;
+  transition: color 0.2s ease, background 0.2s ease;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.tab:hover {
+  color: #bffcc8;
+  background: rgba(10,40,20,0.06);
+}
+
+.tab.active {
+  color: #bffcc8;
+}
+
+.tab.active::after {
+  content: "";
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #07c26a, #00a85a);
+}
+
+.badge-count {
+  background: #ff4757;
+  color: white;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: bold;
+}
+
+/* Tab Content */
+.tab-content {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Overview Tab */
+.overview .stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.stat-card {
+  background: white;
+  padding: 1.5rem;
+  border-radius: 12px;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.05);
+  display: flex;
+  gap: 1.5rem;
+  transition: all 0.3s ease;
+  border: 2px solid transparent;
+  width: 300px;
+  margin:50px
+}
+
+.stat-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 10px 25px rgba(102, 126, 234, 0.15);
+  border-color: #667eea;
+}
+
+.stat-icon {
+  font-size: 2.5rem;
+}
+
+.stat-info h3 {
+  color: #666;
+  font-size: 0.9rem;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+}
+
+.stat-value {
+  font-size: 2rem;
+  font-weight: bold;
+  color: #667eea;
+  margin-bottom: 0.25rem;
+}
+
+.stat-subtext {
+  font-size: 0.85rem;
+  color: #999;
+}
+
+.upgrade-banner {
+  background: linear-gradient(135deg, #ffc107 0%, #ff9800 100%);
+  color: white;
+  padding: 2rem;
+  border-radius: 12px;
+  text-align: center;
+  margin-top: 2rem;
+}
+
+.upgrade-banner h3 {
+  font-size: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.upgrade-banner p {
+  margin-bottom: 1rem;
+  opacity: 0.9;
+}
+
+/* Websites Tab */
+.add-website-form {
+  background: white;
+  padding: 2rem;
+  border-radius: 12px;
+  margin-bottom: 2rem;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.05);
+}
+
+.add-website-form h2 {
+  margin-bottom: 1.5rem;
+  color: #333;
+}
+
+.form-group {
+  display: flex;
+  gap: 1rem;
+}
+
+.form-group input {
+  flex: 1;
+  padding: 0.8rem 1rem;
+  border: 2px solid #eee;
+  border-radius: 8px;
+  font-size: 1rem;
+  transition: border-color 0.3s ease;
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: #667eea;
+}
+
+.info-text {
+  margin-top: 1rem;
+  padding: 0.8rem;
+  background: #e3f2fd;
+  color: #1976d2;
+  border-radius: 8px;
+  border-left: 4px solid #1976d2;
+}
+
+.websites-list {
+  background: white;
+  padding: 2rem;
+  border-radius: 12px;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.05);
+}
+
+.websites-list h2 {
+  margin-bottom: 1.5rem;
+  color: #333;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: #999;
+  font-size: 1.1rem;
+}
+
+.website-card {
+  background: #f8f9fa;
+  padding: 1.5rem;
+  border-radius: 12px;
+  margin-bottom: 1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: all 0.3s ease;
+  border: 2px solid transparent;
+}
+
+.website-card:hover {
+  border-color: #667eea;
+  box-shadow: 0 5px 15px rgba(102, 126, 234, 0.1);
+}
+
+.website-info h3 {
+  color: #333;
+  font-size: 1.1rem;
+  margin-bottom: 0.5rem;
+}
+
+.website-info p {
+  color: #999;
+  font-size: 0.9rem;
+  margin: 0.25rem 0;
+}
+
+.website-actions {
+  display: flex;
+  gap: 1rem;
+}
+
+/* Buttons */
+.btn-primary {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  padding: 0.8rem 1.5rem;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: all 0.3s ease;
+  white-space: nowrap;
+}
+
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+}
+
+.btn-secondary {
+  background: white;
+  color: #667eea;
+  border: 2px solid #667eea;
+  padding: 0.6rem 1.2rem;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: all 0.3s ease;
+  white-space: nowrap;
+}
+
+.btn-secondary:hover {
+  background: #667eea;
+  color: white;
+}
+
+/* Alerts Tab */
+.alerts {
+  background: white;
+  padding: 2rem;
+  border-radius: 12px;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.05);
+}
+
+.alerts h2 {
+  margin-bottom: 1.5rem;
+  color: #333;
+}
+
+.alerts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.alert-card {
+  background: #f8f9fa;
+  border-left: 5px solid;
+  padding: 1.5rem;
+  border-radius: 8px;
+  transition: all 0.3s ease;
+}
+
+.alert-card.low {
+  border-left-color: #4caf50;
+  background: #e8f5e9;
+}
+
+.alert-card.medium {
+  border-left-color: #ff9800;
+  background: #fff3e0;
+}
+
+.alert-card.high {
+  border-left-color: #f44336;
+  background: #ffebee;
+}
+
+.alert-card.read {
+  opacity: 0.7;
+}
+
+.alert-card.unread {
+  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+}
+
+.alert-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.8rem;
+}
+
+.threat-badge {
+  padding: 0.4rem 0.8rem;
+  border-radius: 6px;
+  font-weight: bold;
+  font-size: 0.85rem;
+  color: white;
+}
+
+.threat-badge.low {
+  background: #4caf50;
+}
+
+.threat-badge.medium {
+  background: #ff9800;
+}
+
+.threat-badge.high {
+  background: #f44336;
+}
+
+.alert-time {
+  color: #999;
+  font-size: 0.85rem;
+}
+
+.alert-body h3 {
+  color: #333;
+  margin-bottom: 0.5rem;
+}
+
+.alert-body p {
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.btn-mark-read {
+  margin-top: 1rem;
+  background: #667eea;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: all 0.3s ease;
+}
+
+.btn-mark-read:hover {
+  background: #764ba2;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .dashboard-header {
+    flex-direction: column;
+    gap: 1rem;
+    text-align: center;
+  }
+
+  .header-right {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .tabs {
+    flex-wrap: wrap;
+  }
+
+  .tab {
+    flex: 1;
+    min-width: 150px;
+    padding: 1rem;
+  }
+
+  .tab-content {
+    padding: 1.5rem 1rem;
+  }
+
+  .overview .stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .website-card {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  .website-actions {
+    width: 100%;
+  }
+
+  .website-actions button {
+    width: 100%;
+  }
+
+  .form-group {
+    flex-direction: column;
+  }
+
+  .form-group button {
+    width: 100%;
+  }
+
+  .alert-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+}
+
+/* Tab Navigation */
+.tabs-navigation {
+  display: flex;
+  gap: 0.5rem;
+  padding: 1rem 2rem;
+  background: linear-gradient(135deg, #042f1d 0%, #052b18 100%);
+  border-bottom: 2px solid #28a745;
+  overflow-x: auto;
+  flex-wrap: wrap;
+}
+
+.tab {
+  padding: 10px 16px;
+  background: transparent;
+  color: #9ef08a;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  white-space: nowrap;
+  font-size: 0.95rem;
+}
+
+.tab:hover {
+  color: #bffcc8;
+  border-color: #28a745;
+  background: rgba(40, 167, 69, 0.1);
+}
+
+.tab.active {
+  color: #bffcc8;
+  border-color: #28a745;
+  background: rgba(40, 167, 69, 0.2);
+  box-shadow: 0 2px 8px rgba(40, 167, 69, 0.3);
+}
+
+/* Blocked Threats Tab Styles */
+.tab-content.blocked-threats {
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.tab-content.blocked-threats h2 {
+  font-size: 1.8rem;
+  color: #28a745;
+  margin-bottom: 1.5rem;
+  text-shadow: 0 2px 8px rgba(40, 167, 69, 0.3);
+}
+
+.blocked-threats-list {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.blocked-threat-card {
+  background: linear-gradient(135deg, #1a472a 0%, #0f3d23 100%);
+  border: 2px solid #28a745;
+  border-radius: 10px;
+  padding: 1.5rem;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 15px rgba(40, 167, 69, 0.2);
+}
+
+.blocked-threat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(40, 167, 69, 0.3);
+  border-color: #20c997;
+}
+
+.blocked-threat-card.unblocked {
+  opacity: 0.7;
+  background: linear-gradient(135deg, #2d3436 0%, #1e272e 100%);
+  border-color: #aaa;
+}
+
+.threat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  gap: 1rem;
+}
+
+.ip-badge {
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+  background: rgba(255, 255, 255, 0.1);
+  padding: 8px 12px;
+  border-radius: 6px;
+  color: #bffcc8;
+  font-weight: 700;
+  word-break: break-all;
+  flex: 1;
+}
+
+.status-badge {
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.status-badge.active {
+  background: rgba(40, 167, 69, 0.3);
+  color: #28a745;
+  border: 1px solid #28a745;
+}
+
+.status-badge.inactive {
+  background: rgba(128, 128, 128, 0.3);
+  color: #aaa;
+  border: 1px solid #666;
+}
+
+.threat-details {
+  display: grid;
+  gap: 0.8rem;
+  margin-bottom: 1rem;
+}
+
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.6rem;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  gap: 1rem;
+}
+
+.detail-row .label {
+  font-weight: 600;
+  color: #9ef08a;
+  flex: 0 0 120px;
+}
+
+.detail-row .value {
+  color: #d8f8de;
+  text-align: right;
+  flex: 1;
+  word-break: break-word;
+}
+
+.risk-score {
+  color: white;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.summary-section {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 1rem;
+  border-radius: 6px;
+  border-left: 3px solid #ffc107;
+  margin-top: 0.5rem;
+}
+
+.summary-section p {
+  margin: 0;
+  color: #d8f8de;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.btn-unblock {
+  width: 100%;
+  padding: 10px 16px;
+  background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-size: 14px;
+}
+
+.btn-unblock:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(220, 53, 69, 0.4);
+}
+
+.btn-unblock:active {
+  transform: translateY(0);
+}
+
+.loading-state {
+  text-align: center;
+  padding: 2rem;
+  color: #9ef08a;
+  font-style: italic;
+}
+
+@media (max-width: 768px) {
+  .threat-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .detail-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .detail-row .label {
+    flex: none;
+  }
+
+  .detail-row .value {
+    text-align: left;
+    width: 100%;
+  }
+
+  .ip-badge {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .dashboard-header {
+    padding: 1rem;
+  }
+
+  .header-left h1 {
+    font-size: 1.5rem;
+  }
+
+  .tabs {
+    overflow-x: auto;
+  }
+
+  .tab {
+    min-width: 120px;
+    font-size: 0.9rem;
+  }
+
+  .stat-card {
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .stat-icon {
+    font-size: 2rem;
+  }
+
+  .blocked-threat-card {
+    padding: 1rem;
+  }
+
+  .threat-header {
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 480px) {
+  .dashboard-header {
+    padding: 1rem;
+  }
+
+  .header-left h1 {
+    font-size: 1.5rem;
+  }
+
+  .tabs {
+    overflow-x: auto;
+  }
+
+  .tab {
+    min-width: 120px;
+    font-size: 0.9rem;
+  }
+
+  .stat-card {
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .stat-icon {
+    font-size: 2rem;
+  }
+}

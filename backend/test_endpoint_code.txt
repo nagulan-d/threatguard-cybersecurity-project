@@ -1,0 +1,41 @@
+# Test endpoint - add this to app.py before @app.route("/api/threats")
+
+@app.route("/api/test-random", methods=["GET"])
+def test_random():
+    """Test endpoint to verify randomization works"""
+    import random
+    from datetime import datetime, timedelta
+    
+    print("\n🧪 TEST ENDPOINT CALLED")
+    
+    # Fetch live data from OTX Pulses
+    headers = {"X-OTX-API-KEY": API_KEY}
+    since = (datetime.utcnow() - timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%S")
+    
+    resp = requests.get(
+        "https://otx.alienvault.com/api/v1/pulses/subscribed",
+        headers=headers,
+        params={"limit": 10, "modified_since": since},
+        timeout=30
+    )
+    
+    print(f"✓ OTX Status: {resp.status_code}")
+    
+    data = resp.json()
+    pulses = data.get("results", [])
+    
+    # Get all indicators
+    indicators = []
+    for pulse in pulses:
+        for ind in pulse.get("indicators", []):
+            indicators.append(ind.get("indicator"))
+    
+    print(f"📊 Total indicators: {len(indicators)}")
+    
+    # Shuffle and return first 5
+    random.shuffle(indicators)
+    result = indicators[:5]
+    
+    print(f"🎲 Returning 5 random: {result}")
+    
+    return jsonify({"indicators": result, "total": len(indicators)})

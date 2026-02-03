@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  backend-lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install linters
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff black
+      - name: Ruff check
+        run: ruff check .
+      - name: Black check
+        run: black --check .
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install
+        run: npm ci || npm install
+      - name: Lint (if configured)
+        run: |
+          npm run lint --if-present || echo "No lint script"
+      - name: Build
+        env:
+          REACT_APP_API_ORIGIN: http://localhost:5000
+        run: npm run build

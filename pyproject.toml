@@ -1,0 +1,17 @@
+[tool.black]
+line-length = 100
+target-version = ["py311", "py310", "py39"]
+exclude = "^(migrations|venv|.venv|build|dist|node_modules)/"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["migrations", "venv", ".venv", "node_modules", "build", "dist"]
+select = [
+  "E",  # pycodestyle errors
+  "F",  # pyflakes
+  "I",  # isort
+]
+ignore = [
+  "E501",  # handled by black
+]

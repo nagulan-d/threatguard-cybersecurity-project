@@ -1,0 +1,75 @@
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+
+# Flask/DB
+backend/instance/
+backend/*.sqlite3
+backend/*.db
+backend/*.sqlite
+backend/.env
+
+# Node/React
+frontend/node_modules/
+frontend/build/
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# Logs
+logs/
+*.log
+
+# Coverage / reports
+coverage/
+*.coverage
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.env
+venv/
+.env.*
+
+# Sensitive Data
+recent_threats.json
+*.key
+*.pem
+*.crt
+secrets.json
+config.json
+
+# Docker
+.env
+docker.env
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test Outputs
+backend_output.txt
+
+# IDE
+.vscode/
+.idea/
+
+# ZIP files
+*.zip
