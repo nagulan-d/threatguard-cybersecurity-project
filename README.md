@@ -11,6 +11,8 @@ python app.py
 
 Backend runs on: `http://127.0.0.1:5000`
 
+Deployment guide: readme/DEPLOYMENT_GUIDE.md
+
 ### 2. Frontend Setup (New Terminal)
 
 ```powershell

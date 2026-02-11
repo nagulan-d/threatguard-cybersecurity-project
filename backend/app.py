@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_mail import Mail, Message
 from flask_migrate import Migrate
 from flask_cors import CORS
@@ -104,6 +104,8 @@ NOTIFY_THRESHOLD = int(os.getenv("NOTIFY_THRESHOLD", 80))
 THREATS_OUTPUT = os.getenv("THREATS_OUTPUT", "recent_threats.json")
 THREATS_POLL_INTERVAL = int(os.getenv("THREATS_POLL_INTERVAL", 300))  # Check every 5 minutes (prevents Gmail limit)
 THREATS_LIMIT = int(os.getenv("THREATS_LIMIT", 30))  # Increased default to get more fresh indicators
+AGENT_API_TOKEN = os.getenv("AGENT_API_TOKEN")
+AGENT_REQUIRE_TOKEN = os.getenv("AGENT_REQUIRE_TOKEN", "true").lower() == "true"
 
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
@@ -444,6 +446,28 @@ class BlockToken(db.Model):
             return False
         return True
 
+
+class Agent(db.Model):
+    """Track agent registrations and last-seen metadata."""
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.String(100), unique=True, nullable=False, index=True)
+    hostname = db.Column(db.String(255))
+    last_seen = db.Column(db.DateTime)
+    last_poll = db.Column(db.DateTime)
+    last_ip = db.Column(db.String(45))
+    last_status = db.Column(db.String(50))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class AgentEnforcement(db.Model):
+    """Track enforcement results reported by agents."""
+    id = db.Column(db.Integer, primary_key=True)
+    agent_id = db.Column(db.String(100), nullable=False, index=True)
+    ip_address = db.Column(db.String(45), nullable=False, index=True)
+    status = db.Column(db.String(30), nullable=False)
+    message = db.Column(db.String(255), default="")
+    reported_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
 # Store block tokens temporarily (in production, use Redis or database)
 block_tokens_store = {}
 
@@ -524,6 +548,61 @@ def token_required(f):
             return jsonify({"error": "Invalid token"}), 401
         return f(current_user, *args, **kwargs)
     return decorated
+
+
+def _normalize_agent_fields(data):
+    agent_id = (
+        request.headers.get("X-Agent-Id")
+        or request.headers.get("X-Agent-ID")
+        or (data or {}).get("agent_id")
+    )
+    api_token = (
+        request.headers.get("X-Api-Token")
+        or request.headers.get("X-API-Token")
+        or request.headers.get("Authorization")
+        or (data or {}).get("api_token")
+    )
+    if api_token and api_token.startswith("Bearer "):
+        api_token = api_token[7:]
+    timestamp = request.headers.get("X-Timestamp") or (data or {}).get("timestamp")
+    hostname = request.headers.get("X-Hostname") or (data or {}).get("hostname")
+    return agent_id, api_token, timestamp, hostname
+
+
+def _validate_agent_request(allow_body=True):
+    data = request.get_json(silent=True) if allow_body else {}
+    agent_id, api_token, timestamp, hostname = _normalize_agent_fields(data)
+
+    if not agent_id or not api_token or not timestamp:
+        return None, jsonify({"error": "Missing agent_id, api_token, or timestamp"}), 400
+
+    if AGENT_REQUIRE_TOKEN and (not AGENT_API_TOKEN or api_token != AGENT_API_TOKEN):
+        return None, jsonify({"error": "Invalid agent token"}), 401
+
+    return {
+        "agent_id": agent_id,
+        "api_token": api_token,
+        "timestamp": timestamp,
+        "hostname": hostname,
+        "payload": data or {},
+    }, None, None
+
+
+def _upsert_agent_record(agent_id, hostname, last_status=None, is_poll=False, commit=True):
+    agent = Agent.query.filter_by(agent_id=agent_id).first()
+    if not agent:
+        agent = Agent(agent_id=agent_id)
+        db.session.add(agent)
+    if hostname:
+        agent.hostname = hostname
+    agent.last_seen = datetime.utcnow()
+    agent.last_ip = request.remote_addr
+    if is_poll:
+        agent.last_poll = datetime.utcnow()
+    if last_status:
+        agent.last_status = last_status
+    if commit:
+        db.session.commit()
 
 # ============== IP BLOCKING MIDDLEWARE ==============
 @app.before_request
@@ -627,6 +706,14 @@ def admin_list_blocked_ips(current_user):
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({"message": "Threat Intelligence API is running!"})
+
+
+@app.route("/downloads/<path:filename>", methods=["GET"])
+def download_agent_installer(filename):
+    if filename != "threat-agent-installer.sh":
+        return jsonify({"error": "File not found"}), 404
+    downloads_dir = os.path.join(os.path.dirname(__file__), "downloads")
+    return send_from_directory(downloads_dir, filename, as_attachment=True)
 
 # Test endpoint to verify token format
 @app.route("/api/test-token", methods=["POST"])
@@ -806,6 +893,138 @@ def get_threats():
     except Exception as e:
         print(f"❌ Error: {e}")
         return jsonify([])
+
+
+def _extract_ip_from_threat(threat):
+    if not isinstance(threat, dict):
+        return None
+    ip_candidate = threat.get("ip") or threat.get("ip_address") or threat.get("ip_address_v4")
+    if ip_candidate and is_valid_ip(str(ip_candidate)):
+        return str(ip_candidate)
+    indicator = threat.get("indicator") or threat.get("indicator_value")
+    extracted = extract_ip_from_indicator(indicator) if indicator else None
+    if extracted and is_valid_ip(str(extracted)):
+        return str(extracted)
+    return None
+
+
+@app.route("/api/high-risk-threats", methods=["GET"])
+def get_high_risk_threats_for_agents():
+    agent_meta, error_response, status_code = _validate_agent_request(allow_body=False)
+    if error_response:
+        return error_response, status_code
+
+    try:
+        with open(THREATS_OUTPUT, "r", encoding="utf-8") as f:
+            all_threats = json.load(f)
+    except Exception as e:
+        print(f"[AGENT] Failed to read threats cache: {e}")
+        return jsonify({"threats": [], "count": 0, "timestamp": datetime.utcnow().isoformat()}), 200
+
+    high_risk = [t for t in all_threats if t.get("score", 0) >= 75]
+    ip_set = set()
+    threats_out = []
+    for threat in high_risk:
+        ip_address = _extract_ip_from_threat(threat)
+        if not ip_address or ip_address in ip_set:
+            continue
+        ip_set.add(ip_address)
+        threats_out.append({
+            "ip": ip_address,
+            "risk": "HIGH",
+            "action": "BLOCK",
+        })
+
+    _upsert_agent_record(
+        agent_meta["agent_id"],
+        agent_meta.get("hostname"),
+        last_status="polled",
+        is_poll=True,
+    )
+
+    return jsonify({
+        "threats": threats_out,
+        "count": len(threats_out),
+        "timestamp": datetime.utcnow().isoformat()
+    }), 200
+
+
+@app.route("/api/status", methods=["POST"])
+def post_agent_status():
+    agent_meta, error_response, status_code = _validate_agent_request(allow_body=True)
+    if error_response:
+        return error_response, status_code
+
+    data = agent_meta.get("payload") or {}
+    ip_address = data.get("ip") or data.get("ip_address")
+    status = data.get("status")
+    message = data.get("message", "")
+
+    if not ip_address or not status:
+        return jsonify({"error": "Missing ip or status"}), 400
+    if not is_valid_ip(str(ip_address)):
+        return jsonify({"error": "Invalid IP address"}), 400
+
+    enforcement = AgentEnforcement(
+        agent_id=agent_meta["agent_id"],
+        ip_address=str(ip_address),
+        status=str(status),
+        message=str(message)[:255]
+    )
+    db.session.add(enforcement)
+    _upsert_agent_record(
+        agent_meta["agent_id"],
+        agent_meta.get("hostname"),
+        last_status=str(status),
+        commit=False
+    )
+    db.session.commit()
+
+    return jsonify({"message": "Status recorded"}), 200
+
+
+@app.route("/api/admin/agent-status", methods=["GET"])
+@token_required
+def get_agent_status(current_user):
+    if current_user.role != "admin":
+        return jsonify({"error": "Unauthorized"}), 403
+
+    agents = Agent.query.order_by(Agent.last_seen.desc(), Agent.agent_id.asc()).all()
+    return jsonify([
+        {
+            "agent_id": a.agent_id,
+            "hostname": a.hostname,
+            "last_seen": a.last_seen.isoformat() if a.last_seen else None,
+            "last_poll": a.last_poll.isoformat() if a.last_poll else None,
+            "last_ip": a.last_ip,
+            "last_status": a.last_status,
+        }
+        for a in agents
+    ]), 200
+
+
+@app.route("/api/admin/agent-enforcements", methods=["GET"])
+@token_required
+def get_agent_enforcements(current_user):
+    if current_user.role != "admin":
+        return jsonify({"error": "Unauthorized"}), 403
+
+    try:
+        limit = int(request.args.get("limit", 50))
+    except Exception:
+        limit = 50
+
+    logs = AgentEnforcement.query.order_by(AgentEnforcement.reported_at.desc()).limit(limit).all()
+    return jsonify([
+        {
+            "agent_id": l.agent_id,
+            "ip_address": l.ip_address,
+            "status": l.status,
+            "message": l.message,
+            "reported_at": l.reported_at.isoformat(),
+        }
+        for l in logs
+    ]), 200
 
 @app.route("/api/admin-alerts", methods=["GET"])
 @token_required

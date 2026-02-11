@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
+import { API_ORIGIN, API_URL } from "../config";
 import "../styles/UserDashboard.css";
 import logoImg from '../assets/logo1.png';
 
@@ -27,8 +28,12 @@ function UserDashboard({ token, logout }) {
   const [activeTab, setActiveTab] = useState("overview");
   const urlInputRef = useRef(null);
   const [selectedCategory, setSelectedCategory] = useState('All');
+  const [agentStatuses, setAgentStatuses] = useState([]);
+  const [agentLogs, setAgentLogs] = useState([]);
+  const [agentLoading, setAgentLoading] = useState(false);
+  const [showAgentInstructions, setShowAgentInstructions] = useState(false);
 
-  const API_URL = "http://127.0.0.1:5000/api";
+  const agentDownloadUrl = `${API_ORIGIN}/downloads/threat-agent-installer.sh`;
   const navigate = useNavigate();
 
   // Fetch user info, websites, and alerts
@@ -139,6 +144,13 @@ function UserDashboard({ token, logout }) {
     };
     if (userInfo) fetchThreats();
   }, [userInfo, selectedCategory]);
+
+  useEffect(() => {
+    if (userInfo?.role === "admin") {
+      fetchAgentStatus();
+      fetchAgentLogs();
+    }
+  }, [userInfo]);
 
   // --- Filtering helpers ---
 
@@ -262,6 +274,37 @@ function UserDashboard({ token, logout }) {
       console.error("Error fetching blocked threats:", err);
     } finally {
       setBlockedThreatsLoading(false);
+    }
+  };
+
+  const fetchAgentStatus = async () => {
+    try {
+      setAgentLoading(true);
+      const res = await fetch(`${API_URL}/admin/agent-status`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAgentStatuses(Array.isArray(data) ? data : []);
+      }
+    } catch (err) {
+      console.error("Error fetching agent status:", err);
+    } finally {
+      setAgentLoading(false);
+    }
+  };
+
+  const fetchAgentLogs = async () => {
+    try {
+      const res = await fetch(`${API_URL}/admin/agent-enforcements?limit=50`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAgentLogs(Array.isArray(data) ? data : []);
+      }
+    } catch (err) {
+      console.error("Error fetching agent logs:", err);
     }
   };
 
@@ -457,68 +500,69 @@ function UserDashboard({ token, logout }) {
 
       {/* Recent Threats on the main dashboard (moved from Websites) */}
       {activeTab === 'overview' && (
-      <div className="threats-overview" style={{ marginTop: "1.5rem" }}>
-        <h2>Recent Threats ({userInfo?.subscription === "premium" ? 7 : 3})</h2>
-        <div className="filter-bar">
-          <label htmlFor="category-select" style={{ marginRight: 8, color: '#cfeeda' }}>Category:</label>
-          <select
-            id="category-select"
-            value={selectedCategory}
-            onChange={(e) => setSelectedCategory(e.target.value)}
-            style={{ padding: '6px 10px', borderRadius: 6, background: '#0b2a0d', color: '#cfeeda', border: '1px solid #14421a' }}
-          >
-            {availableCategories.map((c) => (
-              <option key={c} value={c}>{c}</option>
-            ))}
-          </select>
-        </div>
+      <>
+        <div className="threats-overview" style={{ marginTop: "1.5rem" }}>
+          <h2>Recent Threats ({userInfo?.subscription === "premium" ? 7 : 3})</h2>
+          <div className="filter-bar">
+            <label htmlFor="category-select" style={{ marginRight: 8, color: '#cfeeda' }}>Category:</label>
+            <select
+              id="category-select"
+              value={selectedCategory}
+              onChange={(e) => setSelectedCategory(e.target.value)}
+              style={{ padding: '6px 10px', borderRadius: 6, background: '#0b2a0d', color: '#cfeeda', border: '1px solid #14421a' }}
+            >
+              {availableCategories.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </div>
 
-        {threatsLoading ? (
-          <p className="empty-state">Loading threats...</p>
-        ) : threats.length === 0 ? (
-          <p className="empty-state">No recent threats found.</p>
-        ) : (
-          <div className="threats-list">
-            {threats.filter(t => matchesCategory(t, selectedCategory)).map((t, idx) => {
-              const isPremium = userInfo?.subscription === "premium";
-              // Prepare steps: prefer prevention_steps, else use deterministic fallback
-              let steps = null;
-              if (t.prevention_steps) {
-                if (Array.isArray(t.prevention_steps)) steps = t.prevention_steps;
-                else if (typeof t.prevention_steps === 'string') {
-                  // split on common separators if NDJSON or joined string
-                  steps = t.prevention_steps.split(/[\.|;|\n|\r|\u2022]+/).map(s => s.trim()).filter(Boolean);
+          {threatsLoading ? (
+            <p className="empty-state">Loading threats...</p>
+          ) : threats.length === 0 ? (
+            <p className="empty-state">No recent threats found.</p>
+          ) : (
+            <div className="threats-list">
+              {threats.filter(t => matchesCategory(t, selectedCategory)).map((t, idx) => {
+                const isPremium = userInfo?.subscription === "premium";
+                // Prepare steps: prefer prevention_steps, else use deterministic fallback
+                let steps = null;
+                if (t.prevention_steps) {
+                  if (Array.isArray(t.prevention_steps)) steps = t.prevention_steps;
+                  else if (typeof t.prevention_steps === 'string') {
+                    // split on common separators if NDJSON or joined string
+                    steps = t.prevention_steps.split(/[\.|;|\n|\r|\u2022]+/).map(s => s.trim()).filter(Boolean);
+                  }
                 }
-              }
-              if (!steps) {
-                steps = [
-                  'Identify affected software',
-                  'Apply vendor patches',
-                  'Verify via scanning for threats'
-                ];
-              }
-
-              // Attempt to extract IP (IPv4/IPv6) from indicator/summary/type or raw otx payload
-              const ipAddress = extractIP(t.indicator) || extractIP(t.summary) || extractIP(t.type) || null;
-              let ipFromOtx = null;
-              if (!ipAddress && t.otx) {
-                try {
-                  const raw = JSON.stringify(t.otx);
-                  ipFromOtx = extractIP(raw);
-                } catch (e) {
-                  ipFromOtx = null;
+                if (!steps) {
+                  steps = [
+                    'Identify affected software',
+                    'Apply vendor patches',
+                    'Verify via scanning for threats'
+                  ];
                 }
-              }
-              const finalIP = ipAddress || ipFromOtx || null;
-              // Prefer backend-provided ip_addresses when available; otherwise show extracted finalIP
-              const ipList = Array.isArray(t.ip_addresses) && t.ip_addresses.length > 0
-                ? t.ip_addresses
-                : (finalIP ? [finalIP] : []);
 
-              return isPremium ? (
-                <div key={idx} className="threat-card-premium" style={{
-                  borderLeft: `4px solid ${getRiskColor(t.score ?? 0)}`
-                }}>
+                // Attempt to extract IP (IPv4/IPv6) from indicator/summary/type or raw otx payload
+                const ipAddress = extractIP(t.indicator) || extractIP(t.summary) || extractIP(t.type) || null;
+                let ipFromOtx = null;
+                if (!ipAddress && t.otx) {
+                  try {
+                    const raw = JSON.stringify(t.otx);
+                    ipFromOtx = extractIP(raw);
+                  } catch (e) {
+                    ipFromOtx = null;
+                  }
+                }
+                const finalIP = ipAddress || ipFromOtx || null;
+                // Prefer backend-provided ip_addresses when available; otherwise show extracted finalIP
+                const ipList = Array.isArray(t.ip_addresses) && t.ip_addresses.length > 0
+                  ? t.ip_addresses
+                  : (finalIP ? [finalIP] : []);
+
+                return isPremium ? (
+                  <div key={idx} className="threat-card-premium" style={{
+                    borderLeft: `4px solid ${getRiskColor(t.score ?? 0)}`
+                  }}>
                   <div className="threat-card-header">
                     <div className="threat-card-title">
                       <span className="threat-icon">🚨</span>
@@ -640,10 +684,141 @@ function UserDashboard({ token, logout }) {
                   )}
                 </div>
               );
-            })}
+                })}
+            </div>
+          )}
+        </div>
+
+        <section style={{ marginTop: "2rem", padding: "1.5rem", backgroundColor: "#132c1f", borderRadius: "8px", border: "1px solid #1f4a33" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem", gap: "1rem", flexWrap: "wrap" }}>
+            <h2 style={{ margin: 0, color: "#b6f0c1" }}>Agent Deployment</h2>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+              <a href={agentDownloadUrl} download>
+                <button
+                  className="btn btn-danger"
+                  style={{
+                    padding: "0.55rem 1rem",
+                    backgroundColor: "#c0392b",
+                    border: "none",
+                    borderRadius: "4px",
+                    color: "#fff",
+                    fontWeight: 700,
+                    cursor: "pointer"
+                  }}
+                >
+                  Download Security Agent
+                </button>
+              </a>
+              <button
+                onClick={() => setShowAgentInstructions(!showAgentInstructions)}
+                style={{
+                  padding: "0.55rem 1rem",
+                  backgroundColor: "#2ecc71",
+                  border: "none",
+                  borderRadius: "4px",
+                  color: "#0b2315",
+                  fontWeight: 700,
+                  cursor: "pointer"
+                }}
+              >
+                {showAgentInstructions ? "Hide Install Instructions" : "Show Install Instructions"}
+              </button>
+              {userInfo?.role === "admin" && (
+                <button
+                  onClick={() => {
+                    fetchAgentStatus();
+                    fetchAgentLogs();
+                  }}
+                  style={{
+                    padding: "0.55rem 1rem",
+                    backgroundColor: "#34495e",
+                    border: "none",
+                    borderRadius: "4px",
+                    color: "#fff",
+                    fontWeight: 700,
+                    cursor: "pointer"
+                  }}
+                >
+                  Refresh Agent Status
+                </button>
+              )}
+            </div>
           </div>
-        )}
-      </div>
+
+          {showAgentInstructions && (
+            <div style={{ background: "#0f2419", padding: "1rem", borderRadius: 6, border: "1px solid #1f4a33", marginBottom: "1rem" }}>
+              <ol style={{ margin: 0, paddingLeft: "1.2rem", color: "#cfeeda" }}>
+                <li>Download the installer to your Linux VM.</li>
+                <li>Run: <code>sudo bash threat-agent-installer.sh</code></li>
+                <li>Edit <code>/opt/threat-agent/agent.conf</code> with your server URL, token, and agent ID.</li>
+                <li>Restart: <code>sudo systemctl restart threat-agent.timer</code></li>
+              </ol>
+            </div>
+          )}
+
+          {userInfo?.role === "admin" && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "1rem" }}>
+              <div style={{ background: "#0f2419", padding: "1rem", borderRadius: 6, border: "1px solid #1f4a33" }}>
+                <h3 style={{ marginTop: 0, color: "#9fe0b2" }}>Registered Agents</h3>
+                {agentLoading ? (
+                  <p style={{ color: "#cfeeda" }}>Loading agent status...</p>
+                ) : agentStatuses.length === 0 ? (
+                  <p style={{ color: "#cfeeda" }}>No agents have reported in yet.</p>
+                ) : (
+                  <table className="user-table" style={{ backgroundColor: "#0d2818" }}>
+                    <thead>
+                      <tr style={{ backgroundColor: "#1a472a" }}>
+                        <th style={{ color: "#b6f0c1" }}>Agent ID</th>
+                        <th style={{ color: "#b6f0c1" }}>Hostname</th>
+                        <th style={{ color: "#b6f0c1" }}>Last Seen</th>
+                        <th style={{ color: "#b6f0c1" }}>Last Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {agentStatuses.map((agent) => (
+                        <tr key={agent.agent_id}>
+                          <td style={{ fontFamily: "monospace" }}>{agent.agent_id}</td>
+                          <td>{agent.hostname || "-"}</td>
+                          <td>{agent.last_seen ? new Date(agent.last_seen).toLocaleString() : "-"}</td>
+                          <td>{agent.last_status || "-"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              <div style={{ background: "#0f2419", padding: "1rem", borderRadius: 6, border: "1px solid #1f4a33" }}>
+                <h3 style={{ marginTop: 0, color: "#9fe0b2" }}>Recent Enforcement</h3>
+                {agentLogs.length === 0 ? (
+                  <p style={{ color: "#cfeeda" }}>No enforcement reports yet.</p>
+                ) : (
+                  <table className="user-table" style={{ backgroundColor: "#0d2818" }}>
+                    <thead>
+                      <tr style={{ backgroundColor: "#1a472a" }}>
+                        <th style={{ color: "#b6f0c1" }}>Agent</th>
+                        <th style={{ color: "#b6f0c1" }}>IP</th>
+                        <th style={{ color: "#b6f0c1" }}>Status</th>
+                        <th style={{ color: "#b6f0c1" }}>Time</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {agentLogs.map((log, idx) => (
+                        <tr key={`${log.agent_id}-${log.ip_address}-${idx}`}>
+                          <td style={{ fontFamily: "monospace" }}>{log.agent_id}</td>
+                          <td style={{ fontFamily: "monospace" }}>{log.ip_address}</td>
+                          <td>{log.status}</td>
+                          <td>{log.reported_at ? new Date(log.reported_at).toLocaleString() : "-"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+      </>
       )}
 
       {/* Navigation tabs removed per user request */}

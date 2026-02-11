@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import ThreatCard from "./ThreatCard";
-import { API_ORIGIN, API_URL } from "../config";
+import { API_URL } from "../config";
 import "../App.css";
 
 function AdminDashboard({ logout }) {
@@ -107,6 +107,7 @@ function AdminDashboard({ logout }) {
       console.error("Error fetching user blocks:", e);
     }
   };
+
 
   // Normalize token: strip leading 'Bearer ' if present and remove surrounding quotes
   const normalizeToken = (t) => {
