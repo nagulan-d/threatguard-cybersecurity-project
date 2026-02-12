@@ -41,7 +41,6 @@ __pycache__/
 *.log
 .env
 venv/
-.env.*
 
 # Sensitive Data
 recent_threats.json
