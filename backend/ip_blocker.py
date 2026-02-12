@@ -179,85 +179,156 @@ class IPBlocker:
         return self.whitelist_ips.copy()
     
     def _block_ip_windows(self, ip: str) -> Tuple[bool, str]:
-        """Block IP using Windows Firewall (netsh command)"""
+        """Block IP using Windows Firewall (netsh command) - REQUIRES ADMIN PRIVILEGES"""
         try:
             # Create inbound block rule
-            rule_name = f"ThreatGuard Block: {ip}"
+            rule_name_in = f"ThreatGuard_Block_IN_{ip.replace('.', '_')}"
+            rule_name_out = f"ThreatGuard_Block_OUT_{ip.replace('.', '_')}"
             
-            cmd = (
-                f'netsh advfirewall firewall add rule name="{rule_name}" '
-                f'dir=in action=block remoteip={ip} enable=yes'
+            # INBOUND RULE
+            cmd_in = (
+                f'netsh advfirewall firewall add rule '
+                f'name="{rule_name_in}" '
+                f'dir=in '
+                f'action=block '
+                f'remoteip={ip} '
+                f'enable=yes '
+                f'profile=any '
+                f'description="Auto-blocked by ThreatGuard CTI System"'
             )
             
-            print(f"\n[IP_BLOCKER] Executing netsh command: {cmd}")
-            logger.info(f"Executing netsh command: {cmd}")
-            result = subprocess.run(
-                cmd,
+            print(f"\n[IP_BLOCKER] 🔒 Blocking IP: {ip}")
+            print(f"[IP_BLOCKER] Command: {cmd_in}")
+            logger.info(f"Executing netsh INBOUND rule for {ip}")
+            
+            result_in = subprocess.run(
+                cmd_in,
                 shell=True,
                 capture_output=True,
-                timeout=10
+                timeout=10,
+                text=True
             )
             
-            stdout_text = result.stdout.decode() if result.stdout else ""
-            stderr_text = result.stderr.decode() if result.stderr else ""
+            stdout_in = result_in.stdout.strip() if result_in.stdout else ""
+            stderr_in = result_in.stderr.strip() if result_in.stderr else ""
             
-            print(f"[IP_BLOCKER] netsh result - returncode: {result.returncode}")
-            print(f"[IP_BLOCKER] stdout: {stdout_text.strip()}")
-            print(f"[IP_BLOCKER] stderr: {stderr_text.strip()}")
-            logger.info(f"netsh result - returncode: {result.returncode}, stdout: {stdout_text.strip()}, stderr: {stderr_text.strip()}")
+            print(f"[IP_BLOCKER] INBOUND - Return Code: {result_in.returncode}")
+            print(f"[IP_BLOCKER] INBOUND - STDOUT: {stdout_in}")
+            print(f"[IP_BLOCKER] INBOUND - STDERR: {stderr_in}")
             
-            # Check both stdout and stderr for "Ok"
-            if result.returncode == 0 or "Ok" in stdout_text or "Ok" in stderr_text:
-                print(f"[IP_BLOCKER] ✓ Inbound rule SUCCESS - creating outbound rule...")
-                # Also create outbound block rule
-                cmd_out = (
-                    f'netsh advfirewall firewall add rule name="{rule_name} (Outbound)" '
-                    f'dir=out action=block remoteip={ip} enable=yes'
-                )
-                logger.info(f"Executing outbound rule: {cmd_out}")
-                subprocess.run(
-                    cmd_out,
-                    shell=True,
-                    capture_output=True,
-                    timeout=10
-                )
-                print(f"[IP_BLOCKER] ✓✓ BOTH RULES CREATED for {ip}")
-                return True, "Windows Firewall rule added"
+            # OUTBOUND RULE
+            cmd_out = (
+                f'netsh advfirewall firewall add rule '
+                f'name="{rule_name_out}" '
+                f'dir=out '
+                f'action=block '
+                f'remoteip={ip} '
+                f'enable=yes '
+                f'profile=any '
+                f'description="Auto-blocked by ThreatGuard CTI System"'
+            )
+            
+            print(f"[IP_BLOCKER] Command: {cmd_out}")
+            logger.info(f"Executing netsh OUTBOUND rule for {ip}")
+            
+            result_out = subprocess.run(
+                cmd_out,
+                shell=True,
+                capture_output=True,
+                timeout=10,
+                text=True
+            )
+            
+            stdout_out = result_out.stdout.strip() if result_out.stdout else ""
+            stderr_out = result_out.stderr.strip() if result_out.stderr else ""
+            
+            print(f"[IP_BLOCKER] OUTBOUND - Return Code: {result_out.returncode}")
+            print(f"[IP_BLOCKER] OUTBOUND - STDOUT: {stdout_out}")
+            print(f"[IP_BLOCKER] OUTBOUND - STDERR: {stderr_out}")
+            
+            # Check if both rules were created successfully
+            # Windows netsh returns 0 on success and prints "Ok." to stdout
+            inbound_success = result_in.returncode == 0 and ("Ok" in stdout_in or "Ok" in stderr_in or result_in.returncode == 0)
+            outbound_success = result_out.returncode == 0 and ("Ok" in stdout_out or "Ok" in stderr_out or result_out.returncode == 0)
+            
+            if inbound_success and outbound_success:
+                print(f"[IP_BLOCKER] ✅✅ SUCCESS - Both firewall rules created for {ip}")
+                logger.info(f"✅ Windows Firewall rules created for {ip} (INBOUND + OUTBOUND)")
+                
+                # Verify rules were actually created
+                verify_cmd = f'netsh advfirewall firewall show rule name="{rule_name_in}"'
+                verify_result = subprocess.run(verify_cmd, shell=True, capture_output=True, text=True, timeout=5)
+                if "Rule Name:" in verify_result.stdout:
+                    print(f"[IP_BLOCKER] ✓ Verified: Rule {rule_name_in} exists in firewall")
+                else:
+                    print(f"[IP_BLOCKER] ⚠️  Warning: Rule created but verification failed - may need admin privileges")
+                
+                return True, f"Windows Firewall rules created (INBOUND + OUTBOUND)"
+            
+            elif inbound_success or outbound_success:
+                print(f"[IP_BLOCKER] ⚠️  Partial success - IN:{inbound_success} OUT:{outbound_success}")
+                logger.warning(f"Partial firewall block for {ip} - IN:{inbound_success} OUT:{outbound_success}")
+                return True, f"Partial block (INBOUND:{inbound_success}, OUTBOUND:{outbound_success})"
+            
             else:
-                error_msg = stderr_text if stderr_text else stdout_text
-                print(f"[IP_BLOCKER] ✗ netsh FAILED for {ip}: {error_msg}")
+                error_msg = stderr_in or stderr_out or stdout_in or stdout_out or "Unknown error"
+                
+                # Check for common errors
+                if "access is denied" in error_msg.lower() or "requested operation requires elevation" in error_msg.lower():
+                    print(f"[IP_BLOCKER] ❌ ADMIN PRIVILEGES REQUIRED!")
+                    logger.error(f"❌ netsh requires administrator privileges - run backend as administrator")
+                    return False, "ADMIN PRIVILEGES REQUIRED - Run backend as Administrator to use Windows Firewall"
+                
+                print(f"[IP_BLOCKER] ❌ Failed to create firewall rules for {ip}: {error_msg}")
                 logger.error(f"netsh FAILED for {ip}: {error_msg}")
-                return False, f"netsh error: {error_msg}"
+                return False, f"Firewall error: {error_msg}"
+                
+        except subprocess.TimeoutExpired:
+            error = "Command timeout - netsh took too long"
+            print(f"[IP_BLOCKER] ❌ {error}")
+            logger.error(error)
+            return False, error
         except Exception as e:
-            print(f"[IP_BLOCKER] ✗✗ Exception in _block_ip_windows for {ip}: {e}")
+            print(f"[IP_BLOCKER] ❌❌ Exception in _block_ip_windows for {ip}: {e}")
             logger.error(f"Exception in _block_ip_windows for {ip}: {e}")
             return False, str(e)
     
     def _unblock_ip_windows(self, ip: str) -> Tuple[bool, str]:
-        """Unblock IP using Windows Firewall (netsh command)"""
+        """Unblock IP using Windows Firewall (netsh command) - REQUIRES ADMIN PRIVILEGES"""
         try:
-            rule_name = f"ThreatGuard Block: {ip}"
+            rule_name_in = f"ThreatGuard_Block_IN_{ip.replace('.', '_')}"
+            rule_name_out = f"ThreatGuard_Block_OUT_{ip.replace('.', '_')}"
             
             # Remove inbound rule
-            cmd = f'netsh advfirewall firewall delete rule name="{rule_name}"'
-            subprocess.run(
-                cmd,
+            cmd_in = f'netsh advfirewall firewall delete rule name="{rule_name_in}"'
+            print(f"[IP_BLOCKER] 🔓 Unblocking IP: {ip}")
+            print(f"[IP_BLOCKER] Removing INBOUND rule...")
+            result_in = subprocess.run(
+                cmd_in,
                 shell=True,
                 capture_output=True,
-                timeout=10
+                timeout=10,
+                text=True
             )
             
             # Remove outbound rule
-            cmd_out = f'netsh advfirewall firewall delete rule name="{rule_name} (Outbound)"'
-            subprocess.run(
+            cmd_out = f'netsh advfirewall firewall delete rule name="{rule_name_out}"'
+            print(f"[IP_BLOCKER] Removing OUTBOUND rule...")
+            result_out = subprocess.run(
                 cmd_out,
                 shell=True,
                 capture_output=True,
-                timeout=10
+                timeout=10,
+                text=True
             )
             
-            return True, "Windows Firewall rules removed"
+            print(f"[IP_BLOCKER] ✅ Firewall rules removed for {ip}")
+            logger.info(f"Windows Firewall rules removed for {ip}")
+            
+            return True, "Windows Firewall rules removed (INBOUND + OUTBOUND)"
         except Exception as e:
+            print(f"[IP_BLOCKER] ❌ Error unblocking {ip}: {e}")
+            logger.error(f"Error unblocking {ip}: {e}")
             return False, str(e)
     
     def _block_ip_iptables(self, ip: str) -> Tuple[bool, str]:

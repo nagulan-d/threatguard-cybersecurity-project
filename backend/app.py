@@ -102,7 +102,7 @@ API_EXPORT_URL = os.getenv("API_EXPORT_URL") or "https://otx.alienvault.com/api/
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 NOTIFY_THRESHOLD = int(os.getenv("NOTIFY_THRESHOLD", 80))
 THREATS_OUTPUT = os.getenv("THREATS_OUTPUT", "recent_threats.json")
-THREATS_POLL_INTERVAL = int(os.getenv("THREATS_POLL_INTERVAL", 300))  # Check every 5 minutes (prevents Gmail limit)
+THREATS_POLL_INTERVAL = int(os.getenv("THREATS_POLL_INTERVAL", 60))  # Check every 1 minute for new threats
 THREATS_LIMIT = int(os.getenv("THREATS_LIMIT", 30))  # Increased default to get more fresh indicators
 AGENT_API_TOKEN = os.getenv("AGENT_API_TOKEN")
 AGENT_REQUIRE_TOKEN = os.getenv("AGENT_REQUIRE_TOKEN", "true").lower() == "true"
@@ -2735,14 +2735,14 @@ def _send_threat_notifications(threats):
                         if not user:
                             continue
                         
-                        # Check if already notified (use threat_id for non-IP threats)
+                        # Check if already notified (reduced window to 1 hour for faster re-notification)
                         notification_key = ip_address if has_ip else threat_id
                         existing_notification = ThreatActionLog.query.filter_by(
                             user_id=user.id,
                             ip_address=notification_key,
                             action='email_sent'
                         ).filter(
-                            ThreatActionLog.timestamp > datetime.utcnow() - timedelta(hours=24)
+                            ThreatActionLog.timestamp > datetime.utcnow() - timedelta(hours=1)
                         ).first()
                         if existing_notification:
                             continue
@@ -2822,7 +2822,7 @@ def _send_threat_notifications(threats):
                                     'sent_to': subscription.email,
                                     'subscribed': True,
                                     'has_ip': has_ip,
-                                    'via': 'automatic_background_notification'
+                                    'via': 'automatic_dashboard_notification'
                                 })
                             )
                             db.session.add(action_log)
@@ -2831,7 +2831,7 @@ def _send_threat_notifications(threats):
                             
                             user_type = "premium" if is_premium else "free"
                             ip_info = f"IP {ip_address}" if has_ip else f"{threat.get('type', 'threat')} (no IP)"
-                            print(f"[NOTIFY] Sent alert to {user.username} ({user_type}) for {ip_info}")
+                            print(f"[NOTIFY] ✅ Sent alert to {user.username} ({user_type}) for {ip_info}")
                     except Exception as e:
                         print(f"[NOTIFY] Error notifying user: {str(e)}")
                         continue
@@ -2843,7 +2843,7 @@ def _send_threat_notifications(threats):
             except Exception as e:
                 print(f"[NOTIFY] Error processing threat: {str(e)}")
                 continue
-        print(f"[NOTIFY] Sent {notifications_sent} total notifications")
+        print(f"[NOTIFY] 📧 Sent {notifications_sent} total notifications this cycle")
     except Exception as e:
         print(f"[ERROR] _send_threat_notifications: {str(e)}")
         import traceback
@@ -2855,7 +2855,8 @@ def _send_threat_notifications(threats):
 def _background_updater():
     """Background thread to send notifications using cached threats."""
     import time
-    print(f"[BACKGROUND] Starting threat notification updater (interval={THREATS_POLL_INTERVAL}s)")
+    print(f"[BACKGROUND] ✅ Starting threat notification updater (interval={THREATS_POLL_INTERVAL}s = {THREATS_POLL_INTERVAL//60} minute)")
+    print(f"[BACKGROUND] Will check for new high-risk threats every {THREATS_POLL_INTERVAL} seconds")
     
     cycle = 0
     
@@ -2863,34 +2864,57 @@ def _background_updater():
         try:
             # Run within app context for database access
             with app.app_context():
-                now = datetime.utcnow().strftime('%H:%M:%S')
-                print(f"\n[BACKGROUND] [{now}] Notification cycle #{cycle}...")
+                now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+                print(f"\n{'='*60}")
+                print(f"[BACKGROUND] [{now}] Notification cycle #{cycle}")
+                print(f"{'='*60}")
+                
+                # Check for active subscriptions first
+                subscriptions = ThreatSubscription.query.filter_by(is_active=True).all()
+                print(f"[BACKGROUND] Active subscriptions: {len(subscriptions)}")
+                if subscriptions:
+                    for sub in subscriptions:
+                        user = User.query.get(sub.user_id)
+                        if user:
+                            print(f"  - {user.username} ({user.email}) - min_risk_score: {sub.min_risk_score}")
                 
                 # Load threats from cache (faster and reliable)
                 threats = None
                 try:
                     with open(THREATS_OUTPUT, "r", encoding="utf-8") as f:
                         threats = json.load(f)
-                    print(f"[BACKGROUND] Loaded {len(threats) if threats else 0} cached threats")
+                    print(f"[BACKGROUND] ✅ Loaded {len(threats) if threats else 0} cached threats")
+                    
+                    if threats:
+                        # Count high-risk threats
+                        high_risk = [t for t in threats if t.get("score", 0) >= 75]
+                        ip_based = [t for t in high_risk if (t.get("ip") or t.get("ip_address") or t.get("indicator"))]
+                        print(f"[BACKGROUND] High-risk threats (score >= 75): {len(high_risk)}")
+                        print(f"[BACKGROUND] IP-based high-risk threats: {len(ip_based)}")
+                        
                 except FileNotFoundError:
-                    print(f"[BACKGROUND] Cache file not found yet. Will try again next cycle.")
+                    print(f"[BACKGROUND] ⚠️  Cache file not found: {THREATS_OUTPUT}")
+                    print(f"[BACKGROUND] Will try again in next cycle ({THREATS_POLL_INTERVAL}s)")
                 except Exception as e:
-                    print(f"[BACKGROUND] Error reading cache: {e}")
+                    print(f"[BACKGROUND] ❌ Error reading cache: {e}")
                 
                 # Send notifications if we have threats
                 if threats and len(threats) > 0:
+                    print(f"[BACKGROUND] 📧 Processing notifications...")
                     _send_threat_notifications(threats)
                 else:
-                    print(f"[BACKGROUND] No threats available to notify")
+                    print(f"[BACKGROUND] ℹ️  No threats available to notify")
                 
                 cycle += 1
+                print(f"[BACKGROUND] Cycle #{cycle} complete")
                 
         except Exception as e:
-            print(f"[BACKGROUND] ERROR: {e}")
+            print(f"[BACKGROUND] ❌ ERROR in cycle: {e}")
             import traceback
             traceback.print_exc()
         
-        print(f"[BACKGROUND] Sleeping {THREATS_POLL_INTERVAL}s until next cycle...")
+        print(f"[BACKGROUND] ⏰ Sleeping {THREATS_POLL_INTERVAL}s (1 minute) until next cycle...")
+        print(f"{'='*60}\n")
         time.sleep(THREATS_POLL_INTERVAL)
 
 # ---------------- RUN ----------------
@@ -2963,13 +2987,28 @@ if __name__ == "__main__":
         run_main = os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not app.debug
     except Exception:
         run_main = True
+    
+    print("\n" + "="*60)
+    print("🚀 STARTING THREATGUARD BACKEND")
+    print("="*60)
+    
     if run_main:
         import threading
         # Start cache population in separate thread (non-blocking)
         cache_thread = threading.Thread(target=populate_cache_async, daemon=True)
         cache_thread.start()
+        print("✅ Cache updater thread started")
+        
         # Start notification updater
         updater = threading.Thread(target=_background_updater, daemon=True)
         updater.start()
-        print("[SUCCESS] Background threat notification processor started")
+        print("✅ Background threat notification processor started")
+        print(f"📧 Automatic notifications enabled (every 1 minute)")
+    else:
+        print("⚠️  Running in reloader mode - background threads will start after reload")
+    
+    print("="*60)
+    print(f"🌐 Backend running on http://0.0.0.0:5000")
+    print("="*60 + "\n")
+    
     app.run(debug=False, host="0.0.0.0", port=5000)

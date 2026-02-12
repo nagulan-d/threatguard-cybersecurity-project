@@ -6,7 +6,14 @@ python -m venv .venv
 
 pip install -r requirements.txt
 flask db upgrade
+
+# ⚠️ IMPORTANT: Run as Administrator for IP Blocking!
+# The backend needs admin privileges to create Windows Firewall rules
+# Right-click PowerShell -> "Run as Administrator", then run:
 python app.py
+
+# Or use the admin startup script:
+# .\START_BACKEND_ADMIN.ps1
 ```
 
 Backend runs on: `http://127.0.0.1:5000`
