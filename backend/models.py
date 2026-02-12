@@ -7,11 +7,12 @@ db = SQLAlchemy()
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
-    password_hash = db.Column(db.String(128), nullable=False)
+    email = db.Column(db.String(100))
+    phone = db.Column(db.String(20))
+    password_hash = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(10), default="user")  # user or admin
-    is_premium = db.Column(db.Boolean, default=False)
+    subscription = db.Column(db.String(20), default="free")  # free or premium
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -23,6 +24,11 @@ class User(db.Model):
     def is_admin(self):
         """Check if user is admin"""
         return self.role == "admin"
+    
+    @property
+    def is_premium(self):
+        """Check if user has premium subscription"""
+        return self.subscription == "premium"
 
 class AccessRequest(db.Model):
     """Track upgrade and feature access requests from users."""

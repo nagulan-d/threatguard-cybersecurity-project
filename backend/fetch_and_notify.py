@@ -1,22 +1,12 @@
 #!/usr/bin/env python
-"""Fetch threats with timeout and send notifications."""
+"""Fetch threats and send notifications."""
 
 import sys
-import signal
 from app import app, db
 from datetime import datetime
 import json
 
-# Setup timeout handler
-def timeout_handler(signum, frame):
-    print("[TIMEOUT] Request timed out after 60 seconds")
-    sys.exit(1)
-
 app.app_context().push()
-
-# Set a 60-second timeout for the whole operation
-signal.signal(signal.SIGALRM, timeout_handler)
-signal.alarm(60)
 
 try:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting threat fetch...")
@@ -41,5 +31,5 @@ except Exception as e:
     import traceback
     traceback.print_exc()
 finally:
-    signal.alarm(0)  # Cancel the alarm
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Done")
+

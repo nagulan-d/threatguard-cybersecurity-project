@@ -1201,10 +1201,9 @@ def send_notification(current_user):
     if not user:
         return jsonify({"error": f"User with email {user_email} not found"}), 404
 
-    # Extract/resolve IP address
-    ip_address = threat.get('ip_address') or extract_ip_from_indicator(threat) or threat.get('indicator')
-    if not ip_address or not is_valid_ip(ip_address):
-        return jsonify({"error": "Valid IP address is required in threat"}), 400
+    # Extract/resolve IP address (optional now)
+    ip_address = threat.get('ip_address') or extract_ip_from_indicator(threat) or threat.get('indicator') or 'N/A'
+    has_valid_ip = ip_address != 'N/A' and ip_address and is_valid_ip(ip_address)
 
     # Threat fields
     threat_type = threat.get('type', 'Unknown')
@@ -1212,25 +1211,27 @@ def send_notification(current_user):
     risk_category = threat.get('severity', 'High')
     summary = threat.get('summary', 'No description available')
 
-    # Generate block token and persist
-    token = generate_block_token(user_id=user.id, ip_address=ip_address, threat_data={
-        'threat_type': threat_type,
-        'risk_score': risk_score
-    })
-    block_token = BlockToken(
-        token=token,
-        user_id=user.id,
-        ip_address=ip_address,
-        threat_type=threat_type,
-        risk_score=risk_score,
-        expires_at=datetime.utcnow() + timedelta(hours=24)
-    )
-    db.session.add(block_token)
-    db.session.commit()
+    # Generate block token and persist ONLY if valid IP exists
+    token = None
+    if has_valid_ip:
+        token = generate_block_token(user_id=user.id, ip_address=ip_address, threat_data={
+            'threat_type': threat_type,
+            'risk_score': risk_score
+        })
+        block_token = BlockToken(
+            token=token,
+            user_id=user.id,
+            ip_address=ip_address,
+            threat_type=threat_type,
+            risk_score=risk_score,
+            expires_at=datetime.utcnow() + timedelta(hours=24)
+        )
+        db.session.add(block_token)
+        db.session.commit()
 
-    # Build HTML email via template with block button
+    # Build HTML email via template with block button (only if IP exists)
     base_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
-    block_url = f"{base_url}/block-threat?token={token}"
+    block_url = f"{base_url}/block-threat?token={token}" if token else None
     unsubscribe_url = f"{base_url}/settings?unsubscribe=true"
 
     threat_data = {
@@ -1242,28 +1243,35 @@ def send_notification(current_user):
         'detected_when': threat.get('timestamp', 'N/A')
     }
 
+    # Determine if user is premium
+    is_premium = (hasattr(user, 'subscription') and user.subscription == "premium")
+
     # Subject and send using HTML template
-    subject = f"High-Risk Threat Alert: {ip_address}"
+    threat_identifier = ip_address if has_valid_ip else threat_type
+    subject = f"Security Alert - Priority {risk_score} - {threat_identifier}"
     email_sent = send_threat_notification_email(
         mail=mail,
         recipient_email=user_email,
         recipient_name=user.username,
         threat_data=threat_data,
         block_url=block_url,
-        unsubscribe_url=unsubscribe_url
+        unsubscribe_url=unsubscribe_url,
+        is_premium=is_premium
     )
 
     # Log email action regardless of SMTP success
+    notification_key = ip_address if has_valid_ip else f"{threat_type}_{risk_score}"
     action_log = ThreatActionLog(
         user_id=user.id,
         action='email_sent',
-        ip_address=ip_address,
+        ip_address=notification_key,
         performed_by_user_id=current_user.id,
         details=json.dumps({
             'threat_type': threat_type,
             'risk_score': risk_score,
             'via': 'manual_send_endpoint',
-            'smtp_success': email_sent
+            'smtp_success': email_sent,
+            'has_ip': has_valid_ip
         })
     )
     db.session.add(action_log)
@@ -2682,106 +2690,148 @@ def fetch_and_cache(limit=None, modified_since=None):
         return None
 
 def _send_threat_notifications(threats):
-    """Send email notifications to subscribed users for high-risk threats."""
+    """Send email notifications to subscribed users for high-risk threats (with or without IPs)."""
     if not threats:
         print("[NOTIFY] No threats to process")
         return
     try:
+        # Get all active subscriptions
         subscriptions = ThreatSubscription.query.filter_by(is_active=True).all()
+        
         if not subscriptions:
             print("[NOTIFY] No active subscriptions found")
             return
+            
         print(f"[NOTIFY] Processing {len(threats)} threats for {len(subscriptions)} subscribed users")
         notifications_sent = 0
         high_risk_threats = [t for t in threats if t.get("score", 0) >= 75]
         if not high_risk_threats:
             print("[NOTIFY] No high-risk threats (score >= 75) for automated notifications")
             return
-        print(f"[NOTIFY] {len(high_risk_threats)} high-risk threats eligible for automated alerts")
-        for threat in high_risk_threats:
+        
+        # Filter to ONLY IP-based threats for auto notifications
+        ip_threats = []
+        for t in high_risk_threats:
+            ip = t.get("ip") or t.get("ip_address") or t.get("indicator")
+            if ip and ip != "N/A" and ip != "Unknown" and is_valid_ip(ip):
+                ip_threats.append(t)
+        
+        if not ip_threats:
+            print("[NOTIFY] No IP-based high-risk threats for automated notifications")
+            return
+        
+        print(f"[NOTIFY] {len(ip_threats)} IP-based high-risk threats eligible for automated alerts")
+        for threat in ip_threats:
             try:
-                ip_address = threat.get("ip") or threat.get("ip_address") or threat.get("indicator")
-                if not ip_address:
-                    continue
+                # Get IP if exists (not required anymore - can send notifications for domain/URL threats too)
+                ip_address = threat.get("ip") or threat.get("ip_address") or threat.get("indicator") or "N/A"
+                threat_id = threat.get("id") or f"{threat.get('type', 'unknown')}_{threat.get('score', 0)}"
+                has_ip = ip_address != "N/A" and ip_address and ip_address != "Unknown"
+                
                 for subscription in subscriptions:
                     try:
-                        if threat.get("score", 0) < subscription.min_risk_score:
-                            continue
-                        already_blocked = BlockedThreat.query.filter_by(
-                            user_id=subscription.user_id,
-                            ip_address=ip_address,
-                            is_active=True
-                        ).first()
-                        if already_blocked:
-                            continue
+                        # Get user info
                         user = User.query.get(subscription.user_id)
                         if not user:
                             continue
+                        
+                        # Check if already notified (use threat_id for non-IP threats)
+                        notification_key = ip_address if has_ip else threat_id
                         existing_notification = ThreatActionLog.query.filter_by(
                             user_id=user.id,
-                            ip_address=ip_address,
+                            ip_address=notification_key,
                             action='email_sent'
                         ).filter(
                             ThreatActionLog.timestamp > datetime.utcnow() - timedelta(hours=24)
                         ).first()
                         if existing_notification:
                             continue
-                        token = generate_block_token(user_id=user.id, ip_address=ip_address, threat_data=threat)
-                        block_token = BlockToken(
-                            token=token,
-                            user_id=user.id,
-                            ip_address=ip_address,
-                            threat_type=threat.get('type', 'Unknown'),
-                            risk_score=threat.get('score', 0),
-                            expires_at=datetime.utcnow() + timedelta(hours=24)
-                        )
-                        db.session.add(block_token)
-                        try:
-                            db.session.commit()
-                        except Exception as e:
-                            print(f"[NOTIFY] Failed to commit block token: {e}")
-                            db.session.rollback()
-                            continue
-                        base_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
-                        block_url = f"{base_url}/block-threat?token={token}"
-                        unsubscribe_url = f"{base_url}/settings?unsubscribe=true"
+                        
+                        # Check if user is premium (for blocking capability)
+                        is_premium = (hasattr(user, 'subscription') and user.subscription == "premium")
+                        
+                        # Only create block token if PREMIUM and has IP
+                        token = None
+                        block_url = os.getenv("FRONTEND_URL", "http://localhost:3000") + "/dashboard"
+                        show_blocking = is_premium and has_ip
+                        
+                        if show_blocking:
+                            # Check if already blocked
+                            already_blocked = BlockedThreat.query.filter_by(
+                                user_id=user.id,
+                                ip_address=ip_address,
+                                is_active=True
+                            ).first()
+                            if already_blocked:
+                                continue
+                            
+                            token = generate_block_token(user_id=user.id, ip_address=ip_address, threat_data=threat)
+                            block_token = BlockToken(
+                                token=token,
+                                user_id=user.id,
+                                ip_address=ip_address,
+                                threat_type=threat.get('type', 'Unknown'),
+                                risk_score=threat.get('score', 0),
+                                expires_at=datetime.utcnow() + timedelta(hours=24)
+                            )
+                            db.session.add(block_token)
+                            try:
+                                db.session.commit()
+                            except Exception as e:
+                                print(f"[NOTIFY] Failed to commit block token: {e}")
+                                db.session.rollback()
+                            
+                            base_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+                            block_url = f"{base_url}/block-threat?token={token}"
+                        
+                        unsubscribe_url = os.getenv("FRONTEND_URL", "http://localhost:3000") + "/settings"
+                        
                         threat_data = {
-                            'ip_address': ip_address,
+                            'ip_address': ip_address if has_ip else None,
                             'threat_type': threat.get('type', 'Unknown'),
                             'risk_category': threat.get('severity', 'High'),
                             'risk_score': threat.get('score', 0),
-                            'summary': threat.get('summary', 'No description available'),
+                            'summary': threat.get('summary', 'Review this activity in your dashboard'),
                             'detected_when': threat.get('timestamp', 'N/A'),
                             'prevention': threat.get('prevention', ''),
                             'prevention_steps': threat.get('prevention_steps', ''),
-                            'category': threat.get('category', 'Unknown')
+                            'category': threat.get('category', 'Unknown'),
+                            'notification_type': 'expanded' if is_premium else 'brief'
                         }
+                        
                         email_sent = send_threat_notification_email(
                             mail=mail,
                             recipient_email=subscription.email,
                             recipient_name=user.username,
                             threat_data=threat_data,
                             block_url=block_url,
-                            unsubscribe_url=unsubscribe_url
+                            unsubscribe_url=unsubscribe_url,
+                            is_premium=is_premium  # Pass premium status for email template
                         )
+                        
                         if email_sent:
                             notifications_sent += 1
                             action_log = ThreatActionLog(
                                 user_id=user.id,
                                 action='email_sent',
-                                ip_address=ip_address,
+                                ip_address=notification_key,
                                 performed_by_user_id=None,
                                 details=json.dumps({
                                     'threat_type': threat_data['threat_type'],
                                     'risk_score': threat.get('score', 0),
                                     'sent_to': subscription.email,
+                                    'subscribed': True,
+                                    'has_ip': has_ip,
                                     'via': 'automatic_background_notification'
                                 })
                             )
                             db.session.add(action_log)
                             subscription.last_notification_sent = datetime.utcnow()
                             db.session.add(subscription)
-                            print(f"[NOTIFY] Sent alert to {user.username} ({subscription.email}) for IP {ip_address}")
+                            
+                            user_type = "premium" if is_premium else "free"
+                            ip_info = f"IP {ip_address}" if has_ip else f"{threat.get('type', 'threat')} (no IP)"
+                            print(f"[NOTIFY] Sent alert to {user.username} ({user_type}) for {ip_info}")
                     except Exception as e:
                         print(f"[NOTIFY] Error notifying user: {str(e)}")
                         continue

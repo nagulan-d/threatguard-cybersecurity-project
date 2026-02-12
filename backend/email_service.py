@@ -39,18 +39,21 @@ def generate_block_token(user_id: int, ip_address: str, threat_data: Dict[str, A
 def get_threat_email_template(
     user_name: str,
     threat_data: Dict[str, Any],
-    block_url: str,
-    unsubscribe_url: str
+    block_url: str = None,
+    unsubscribe_url: str = "",
+    is_subscribed: bool = True
 ) -> str:
     """
     Generate HTML email template for high-risk threat notification.
     Supports BRIEF (free users) and EXPANDED (premium users) formats.
+    Simple format for non-subscribers.
     
     Args:
         user_name: Recipient's name
         threat_data: Threat information including IP, type, score, summary, notification_type
-        block_url: URL for "Block IP" button action
+        block_url: URL for blocking action (only shown if subscribed and IP exists)
         unsubscribe_url: URL to unsubscribe from notifications
+        is_subscribed: Whether user has active subscription
     
     Returns:
         HTML email content
@@ -58,19 +61,30 @@ def get_threat_email_template(
     ip_address = threat_data.get('ip_address', 'Unknown')
     threat_type = threat_data.get('threat_type', 'Unknown')
     risk_score = threat_data.get('risk_score', 0)
-    summary = threat_data.get('summary', 'Block or monitor this IP')
+    summary = threat_data.get('summary', 'Review this activity in your dashboard')
     notification_type = threat_data.get('notification_type', 'brief')
+    has_ip = ip_address and ip_address != 'Unknown' and ip_address != 'N/A'
     
     # Color coding based on risk (High: >=75 Red, Medium: 50-74 Yellow, Low: <50 Green)
     if risk_score >= 75:
-        risk_color = '#dc3545'
+        risk_color = '#dc3545'  # Red for high risk
         risk_label = 'HIGH'
     elif risk_score >= 50:
-        risk_color = '#ffc107'
+        risk_color = '#ffc107'  # Yellow for medium
         risk_label = 'MEDIUM'
     else:
-        risk_color = '#28a745'
+        risk_color = '#28a745'  # Green for low
         risk_label = 'LOW'
+    
+    # Obfuscate IP address to avoid spam filters
+    if has_ip:
+        ip_parts = str(ip_address).split('.')
+        if len(ip_parts) == 4:
+            ip_display = f"{ip_parts[0]}.{ip_parts[1]}.xxx.xxx"
+        else:
+            ip_display = "Address (view in dashboard)"
+    else:
+        ip_display = "No IP Address" if 'domain' in threat_type.lower() or 'url' in threat_type.lower() else "N/A"
     
     # Expanded content for premium users
     expanded_section = ''
@@ -84,10 +98,10 @@ def get_threat_email_template(
                             <table width="100%" cellpadding="0" cellspacing="0" style="margin:15px 0;">
                                 <tr>
                                     <td style="padding:15px; background-color:#e8f4f8; border-left:3px solid #17a2b8; border-radius:4px;">
-                                        <p style="margin:0 0 8px 0; font-size:13px; font-weight:600; color:#17a2b8;">🛡️ PREMIUM: Detailed Prevention Guide</p>
+                                        <p style="margin:0 0 8px 0; font-size:13px; font-weight:600; color:#17a2b8;">PREMIUM: Detailed Analysis</p>
                                         
                                         <p style="margin:0 0 8px 0; font-size:12px;"><strong>Category:</strong> {category}</p>
-                                        <p style="margin:0 0 8px 0; font-size:12px;"><strong>Prevention Strategy:</strong></p>
+                                        <p style="margin:0 0 8px 0; font-size:12px;"><strong>Mitigation Strategy:</strong></p>
                                         <p style="margin:0 0 12px 0; font-size:12px; color:#333; line-height:1.5;">{prevention}</p>
                                         
                                         {f'<p style="margin:0 0 8px 0; font-size:12px;"><strong>Action Steps:</strong></p><p style="margin:0; font-size:12px; color:#333; line-height:1.6; white-space:pre-line;">{prevention_steps}</p>' if prevention_steps else ''}
@@ -101,7 +115,7 @@ def get_threat_email_template(
                             <!-- FREE: Upgrade Prompt -->
                             <div style="padding:12px; background-color:#fff3cd; border-left:3px solid #ffc107; border-radius:4px; margin:15px 0;">
                                 <p style="margin:0; font-size:12px; color:#856404; line-height:1.5;">
-                                    <strong>⭐ Upgrade to Premium</strong> for detailed prevention guides, priority alerts, and advanced threat analytics.
+                                    <strong>Upgrade to Premium</strong> for detailed analysis, priority alerts, and advanced analytics.
                                 </p>
                             </div>
 """
@@ -122,8 +136,8 @@ def get_threat_email_template(
                     <!-- Header -->
                     <tr>
                         <td style="background:linear-gradient(135deg, {risk_color} 0%, {risk_color}dd 100%); padding:25px; text-align:center; border-radius:8px 8px 0 0;">
-                            <h2 style="color:#ffffff; margin:0; font-size:20px;">Threat Detected</h2>
-                            <p style="color:#f0f0f0; margin:5px 0 0 0; font-size:13px;">Risk Level: {risk_label}</p>
+                            <h2 style="color:#ffffff; margin:0; font-size:20px;">Security Activity Alert</h2>
+                            <p style="color:#f0f0f0; margin:5px 0 0 0; font-size:13px;">Priority Level: {risk_label}</p>
                         </td>
                     </tr>
                     
@@ -132,20 +146,19 @@ def get_threat_email_template(
                         <td style="padding:25px;">
                             <p style="margin:0 0 15px 0; font-size:14px; color:#333;">Hello {user_name},</p>
                             
-                            <!-- Threat Info -->
+                            <!-- Activity Info -->
                             <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f8f9fa; border-left:4px solid {risk_color}; margin:15px 0;">
                                 <tr>
                                     <td style="padding:15px;">
-                                        <p style="margin:0 0 8px 0; font-size:13px;"><strong>IP Address:</strong></p>
-                                        <p style="margin:0 0 12px 0; font-size:14px; font-family:monospace; color:#333;">{ip_address}</p>
+                                        {f'<p style="margin:0 0 8px 0; font-size:13px;"><strong>Source:</strong></p><p style="margin:0 0 12px 0; font-size:14px; font-family:monospace; color:#333;">{ip_display}</p>' if has_ip else ''}
                                         
-                                        <p style="margin:0 0 8px 0; font-size:13px;"><strong>Threat Type:</strong></p>
+                                        <p style="margin:0 0 8px 0; font-size:13px;"><strong>Type:</strong></p>
                                         <p style="margin:0 0 12px 0; font-size:14px; color:#333;">{threat_type}</p>
                                         
-                                        <p style="margin:0 0 8px 0; font-size:13px;"><strong>Risk Score:</strong></p>
+                                        <p style="margin:0 0 8px 0; font-size:13px;"><strong>Score:</strong></p>
                                         <p style="margin:0 0 12px 0; font-size:14px; color:#333;">{risk_score}/100</p>
                                         
-                                        <p style="margin:0 0 8px 0; font-size:13px;"><strong>Summary:</strong></p>
+                                        <p style="margin:0 0 8px 0; font-size:13px;"><strong>Details:</strong></p>
                                         <p style="margin:0; font-size:14px; color:#333; line-height:1.5;">{summary}</p>
                                     </td>
                                 </tr>
@@ -153,16 +166,7 @@ def get_threat_email_template(
                             
                             {expanded_section}
                             
-                            <!-- Block Button -->
-                            <div style="text-align:center; margin:25px 0;">
-                                <a href="{block_url}" style="display:inline-block; padding:14px 32px; background-color:{risk_color}; color:#ffffff; text-decoration:none; border-radius:6px; font-size:15px; font-weight:600; box-shadow:0 2px 6px rgba(0,0,0,0.2);">
-                                    Block This IP
-                                </a>
-                            </div>
-                            
-                            <p style="margin:15px 0; font-size:12px; color:#666; line-height:1.6;">
-                                <em>Click the button above to block {ip_address} on your environment. This action is instant and cannot be undone here - manage it in your dashboard.</em>
-                            </p>
+                            {'<!-- Action Button for Premium + IP -->\n                            <div style="text-align:center; margin:25px 0;">\n                                <a href="' + (block_url or '#') + '" style="display:inline-block; padding:14px 32px; background-color:' + risk_color + '; color:#ffffff; text-decoration:none; border-radius:6px; font-size:15px; font-weight:600; box-shadow:0 2px 6px rgba(0,0,0,0.2);">\n                                    Block This Threat\n                                </a>\n                            </div>\n                            <p style="margin:15px 0; font-size:12px; color:#666; line-height:1.6; text-align:center;">\n                                <em>Click above to block and protect your environment.</em>\n                            </p>' if (is_subscribed and has_ip and block_url) else ('<p style="margin:15px 0; font-size:13px; color:#666; text-align:center; background:#f0f0f0; padding:12px; border-radius:4px;">\n                                View full details in your <strong>Dashboard</strong>.' + (' Upgrade to <strong>Premium</strong> for instant blocking controls.' if not is_subscribed else '') + '\n                            </p>')}
                         </td>
                     </tr>
                     
@@ -194,6 +198,13 @@ def get_confirmation_email_template(
     blocked_at: str
 ) -> str:
     """Generate HTML email for successful IP block confirmation."""
+    # Obfuscate IP to avoid spam filters
+    ip_parts = ip_address.split('.')
+    if len(ip_parts) == 4:
+        ip_display = f"{ip_parts[0]}.{ip_parts[1]}.xxx.xxx"
+    else:
+        ip_display = "Network Address"
+    
     html = f"""
 <!DOCTYPE html>
 <html>
@@ -210,8 +221,8 @@ def get_confirmation_email_template(
                     <!-- Header -->
                     <tr>
                         <td style="background:linear-gradient(135deg, #28a745 0%, #20c997 100%); padding:25px; text-align:center; border-radius:8px 8px 0 0;">
-                            <h2 style="color:#ffffff; margin:0; font-size:20px;">IP Successfully Blocked</h2>
-                            <p style="color:#f0f0f0; margin:5px 0 0 0; font-size:13px;">Your environment is now protected</p>
+                            <h2 style="color:#ffffff; margin:0; font-size:20px;">Action Completed Successfully</h2>
+                            <p style="color:#f0f0f0; margin:5px 0 0 0; font-size:13px;">Network protection has been updated</p>
                         </td>
                     </tr>
                     
@@ -222,14 +233,14 @@ def get_confirmation_email_template(
                             
                             <!-- Success Message -->
                             <div style="background-color:#d4edda; border-left:4px solid #28a745; padding:15px; margin:15px 0; border-radius:4px;">
-                                <p style="margin:0 0 10px 0; font-size:13px; font-weight:600; color:#155724;">IP Address Blocked:</p>
-                                <p style="margin:0 0 8px 0; font-size:16px; font-family:monospace; color:#000; font-weight:600;">{ip_address}</p>
+                                <p style="margin:0 0 10px 0; font-size:13px; font-weight:600; color:#155724;">Action Completed:</p>
+                                <p style="margin:0 0 8px 0; font-size:16px; font-family:monospace; color:#000; font-weight:600;">{ip_display}</p>
                                 <p style="margin:0 0 5px 0; font-size:13px; color:#155724;"><strong>Type:</strong> {threat_type}</p>
-                                <p style="margin:0; font-size:13px; color:#155724;"><strong>Blocked:</strong> {blocked_at}</p>
+                                <p style="margin:0; font-size:13px; color:#155724;"><strong>Timestamp:</strong> {blocked_at}</p>
                             </div>
                             
                             <p style="margin:15px 0; font-size:14px; color:#333; line-height:1.6;">
-                                This IP is now blocked and cannot access your environment. You can manage it anytime from your dashboard.
+                                This address has been processed and your network protection updated. You can manage settings from your dashboard.
                             </p>
                         </td>
                     </tr>
@@ -256,11 +267,13 @@ def send_threat_notification_email(
     recipient_email: str,
     recipient_name: str,
     threat_data: Dict[str, Any],
-    block_url: str,
-    unsubscribe_url: str
+    block_url: str = None,
+    unsubscribe_url: str = "",
+    is_premium: bool = False
 ) -> bool:
     """
-    Send threat notification email with "Block IP" button.
+    Send threat notification email.
+    Shows action button only for PREMIUM users with IP-based threats.
     
     Args:
         mail: Flask-Mail instance
@@ -269,36 +282,52 @@ def send_threat_notification_email(
         threat_data: Complete threat information
         block_url: URL for blocking action
         unsubscribe_url: URL to unsubscribe
+        is_premium: Whether user has premium subscription (for blocking)
     
     Returns:
         True if email sent successfully, False otherwise
     """
     try:
-        subject = f"🚨 High-Risk Threat Alert: {threat_data.get('ip_address', 'Unknown IP')}"
+        # Sanitize subject to avoid Gmail security filters
+        risk_score = threat_data.get('risk_score', 0)
+        threat_type = threat_data.get('threat_type', 'Activity')
+        subject = f"Security Alert - Priority {risk_score} - {threat_type[:20]}"
+        
+        # Determine if blocking button should be shown (premium + has IP)
+        ip_val = threat_data.get('ip_address', 'N/A')
+        has_ip = ip_val and ip_val not in ['N/A', 'Unknown', '']
+        show_blocking = is_premium and has_ip
         
         html_body = get_threat_email_template(
             user_name=recipient_name,
             threat_data=threat_data,
             block_url=block_url,
-            unsubscribe_url=unsubscribe_url
+            unsubscribe_url=unsubscribe_url,
+            is_subscribed=show_blocking  # Only show block button if premium with IP
         )
         
-        # Plain text fallback
+        # Plain text fallback - sanitized to avoid spam filters
+        ip_info = f"- Source: {threat_data.get('ip_address', 'N/A')}\n" if has_ip else ""
+        
+        if is_premium and has_ip:
+            action_info = f"\nTo block this threat, visit: {block_url}" if block_url else "\nView details in your dashboard." if block_url else "\nView details in your dashboard."
+        elif is_premium:
+            action_info = "\nView details in your dashboard."
+        else:
+            action_info = "\nUpgrade to Premium for instant blocking controls."
+        
         text_body = f"""
-High-Risk Threat Detected
+Security Activity Alert
 
 Hello {recipient_name},
 
-We've detected a high-risk threat targeting your protected environment.
+A security activity requires your attention.
 
-Threat Details:
-- IP Address: {threat_data.get('ip_address', 'Unknown')}
-- Threat Type: {threat_data.get('threat_type', 'Unknown')}
-- Risk Score: {threat_data.get('risk_score', 0)}/100
-- Risk Category: {threat_data.get('risk_category', 'High')}
-- Summary: {threat_data.get('summary', 'No description')}
-
-To block this IP address, visit: {block_url}
+Details:
+{ip_info}- Type: {threat_data.get('threat_type', 'Unknown')}
+- Priority: {threat_data.get('risk_score', 0)}/100
+- Info: {threat_data.get('summary', 'Review recommended')}
+{action_info}
 
 This is an automated threat notification from your CTI Platform.
         """
@@ -342,7 +371,13 @@ def send_confirmation_email(
         True if email sent successfully, False otherwise
     """
     try:
-        subject = f"[CONFIRMED] IP {ip_address} Successfully Blocked"
+        # Sanitize subject to avoid spam filters
+        ip_parts = ip_address.split('.')
+        if len(ip_parts) == 4:
+            ip_masked = f"{ip_parts[0]}.{ip_parts[1]}.xxx.xxx"
+        else:
+            ip_masked = "Address"
+        subject = f"Action Confirmed - Network Protection Updated ({ip_masked})"
         
         html_body = get_confirmation_email_template(
             user_name=recipient_name,
@@ -353,18 +388,18 @@ def send_confirmation_email(
         
         # Plain text fallback
         text_body = f"""
-IP Successfully Blocked
+Action Completed Successfully
 
 Hello {recipient_name},
 
-Great news! The malicious IP address has been successfully blocked on your protected environment.
+Your network protection has been successfully updated.
 
-Blocked IP Details:
-- IP Address: {ip_address}
-- Threat Type: {threat_type}
-- Blocked At: {blocked_at}
+Details:
+- Address: {ip_address}
+- Activity Type: {threat_type}
+- Timestamp: {blocked_at}
 
-This IP address is now actively blocked and cannot access your environment.
+This address has been processed and your network protection updated accordingly.
 
 © {datetime.utcnow().year} Cyber Threat Intelligence Platform
         """
