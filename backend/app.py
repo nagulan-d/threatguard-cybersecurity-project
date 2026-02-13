@@ -102,7 +102,7 @@ API_EXPORT_URL = os.getenv("API_EXPORT_URL") or "https://otx.alienvault.com/api/
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 NOTIFY_THRESHOLD = int(os.getenv("NOTIFY_THRESHOLD", 80))
 THREATS_OUTPUT = os.getenv("THREATS_OUTPUT", "recent_threats.json")
-THREATS_POLL_INTERVAL = int(os.getenv("THREATS_POLL_INTERVAL", 60))  # Check every 1 minute for new threats
+THREATS_POLL_INTERVAL = int(os.getenv("THREATS_POLL_INTERVAL", 5))  # Check every 5 seconds for immediate notifications
 THREATS_LIMIT = int(os.getenv("THREATS_LIMIT", 30))  # Increased default to get more fresh indicators
 AGENT_API_TOKEN = os.getenv("AGENT_API_TOKEN")
 AGENT_REQUIRE_TOKEN = os.getenv("AGENT_REQUIRE_TOKEN", "true").lower() == "true"
@@ -2735,17 +2735,8 @@ def _send_threat_notifications(threats):
                         if not user:
                             continue
                         
-                        # Check if already notified (reduced window to 1 hour for faster re-notification)
-                        notification_key = ip_address if has_ip else threat_id
-                        existing_notification = ThreatActionLog.query.filter_by(
-                            user_id=user.id,
-                            ip_address=notification_key,
-                            action='email_sent'
-                        ).filter(
-                            ThreatActionLog.timestamp > datetime.utcnow() - timedelta(hours=1)
-                        ).first()
-                        if existing_notification:
-                            continue
+                        # NO DUPLICATE CHECK - Send notifications every time high-risk threats exist
+                        # (User requested immediate notifications without delays)
                         
                         # Check if user is premium (for blocking capability)
                         is_premium = (hasattr(user, 'subscription') and user.subscription == "premium")
@@ -2814,7 +2805,7 @@ def _send_threat_notifications(threats):
                             action_log = ThreatActionLog(
                                 user_id=user.id,
                                 action='email_sent',
-                                ip_address=notification_key,
+                                ip_address=ip_address,
                                 performed_by_user_id=None,
                                 details=json.dumps({
                                     'threat_type': threat_data['threat_type'],
@@ -2913,7 +2904,7 @@ def _background_updater():
             import traceback
             traceback.print_exc()
         
-        print(f"[BACKGROUND] ⏰ Sleeping {THREATS_POLL_INTERVAL}s (1 minute) until next cycle...")
+        print(f"[BACKGROUND] ⏰ Sleeping {THREATS_POLL_INTERVAL}s until next cycle...")
         print(f"{'='*60}\n")
         time.sleep(THREATS_POLL_INTERVAL)
 
