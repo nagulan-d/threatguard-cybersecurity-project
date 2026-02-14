@@ -102,10 +102,16 @@ API_EXPORT_URL = os.getenv("API_EXPORT_URL") or "https://otx.alienvault.com/api/
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 NOTIFY_THRESHOLD = int(os.getenv("NOTIFY_THRESHOLD", 80))
 THREATS_OUTPUT = os.getenv("THREATS_OUTPUT", "recent_threats.json")
-THREATS_POLL_INTERVAL = int(os.getenv("THREATS_POLL_INTERVAL", 5))  # Check every 5 seconds for immediate notifications
+THREATS_POLL_INTERVAL = int(os.getenv("THREATS_POLL_INTERVAL", 120))  # Check every 2 minutes for notifications and auto-blocking
 THREATS_LIMIT = int(os.getenv("THREATS_LIMIT", 30))  # Increased default to get more fresh indicators
 AGENT_API_TOKEN = os.getenv("AGENT_API_TOKEN")
 AGENT_REQUIRE_TOKEN = os.getenv("AGENT_REQUIRE_TOKEN", "true").lower() == "true"
+
+# Auto-blocking configuration
+AUTO_BLOCK_ENABLED = os.getenv("AUTO_BLOCK_ENABLED", "true").lower() == "true"
+AUTO_BLOCK_THRESHOLD = int(os.getenv("AUTO_BLOCK_THRESHOLD", 75))  # Block IPs with score >= 75 (High risk)
+AUTO_BLOCK_DELAY = int(os.getenv("AUTO_BLOCK_DELAY", 10))  # Delay between blocks in seconds
+AUTO_BLOCK_MAX_PER_CYCLE = int(os.getenv("AUTO_BLOCK_MAX_PER_CYCLE", 5))  # Max blocks per cycle
 
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
@@ -837,7 +843,7 @@ SHOWN_INDICATORS_REFRESH = set()
 @app.route("/api/threats", methods=["GET"])
 def get_threats():
     """Fast version - returns balanced, randomized cached threats instantly."""
-    print("\n🚀 /api/threats called")
+    print("\n[API] /api/threats called")
     
     try:
         limit = int(request.args.get("limit", 15))
@@ -887,11 +893,11 @@ def get_threats():
         # Randomize final order so they're not grouped by risk level
         random.shuffle(selected_threats)
         
-        print(f"✅ Returning {len(selected_threats)} balanced threats (High: {len([t for t in selected_threats if t.get('score', 0) >= 75])}, Medium: {len([t for t in selected_threats if 50 <= t.get('score', 0) < 75])}, Low: {len([t for t in selected_threats if t.get('score', 0) < 50])})")
+        print(f"[OK] Returning {len(selected_threats)} balanced threats (High: {len([t for t in selected_threats if t.get('score', 0) >= 75])}, Medium: {len([t for t in selected_threats if 50 <= t.get('score', 0) < 75])}, Low: {len([t for t in selected_threats if t.get('score', 0) < 50])})")
         return jsonify(selected_threats)
         
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"[ERROR] Error: {e}")
         return jsonify([])
 
 
@@ -1883,9 +1889,13 @@ def unblock_threat(current_user, threat_id):
         # Call IP blocker to actually unblock the IP
         try:
             success, message = ip_blocker.unblock_ip(blocked_threat.ip_address)
-            print(f"✅ IP {blocked_threat.ip_address} unblocked for user ID {blocked_threat.user_id} (success={success}, message={message})")
+            print(f"[OK] IP {blocked_threat.ip_address} unblocked for user ID {blocked_threat.user_id} (success={success}, message={message})")
         except Exception as e:
             print(f"[WARNING] Failed to call ip_blocker unblock for {blocked_threat.ip_address}: {str(e)}")
+        
+        # Remove from cache if it was an admin auto-block
+        if blocked_threat.blocked_by == 'admin':
+            _remove_ips_from_cache([blocked_threat.ip_address])
         
         print(f"[SUCCESS] IP {blocked_threat.ip_address} unblocked by {current_user.username}")
         
@@ -2062,16 +2072,16 @@ def admin_auto_block_threats(current_user):
         return jsonify({"error": "Unauthorized - Admin access required"}), 403
     
     try:
-        print("\n🛡️ [AUTO-BLOCK] Starting automatic threat blocking system...")
+        print("\n[BLOCK] Starting automatic threat blocking system...")
         
         # Load threats from cache
         threats = []
         try:
             with open(THREATS_OUTPUT, "r", encoding="utf-8") as f:
                 threats = json.load(f)
-            print(f"✅ [AUTO-BLOCK] Loaded {len(threats)} threats from cache")
+            print(f"[OK] [AUTO-BLOCK] Loaded {len(threats)} threats from cache")
         except FileNotFoundError:
-            print("❌ [AUTO-BLOCK] Cache file not found")
+            print("[ERROR] [AUTO-BLOCK] Cache file not found")
             return jsonify({
                 "message": "No threat cache available",
                 "auto_blocked": [],
@@ -2085,7 +2095,7 @@ def admin_auto_block_threats(current_user):
                 }
             }), 200
         except Exception as e:
-            print(f"❌ [AUTO-BLOCK] Error reading cache: {e}")
+            print(f"[ERROR] [BLOCK] Error reading cache: {e}")
             return jsonify({"error": f"Failed to read threat cache: {e}"}), 500
         
         # Filter high-risk threats (score >= 75)
@@ -2103,13 +2113,13 @@ def admin_auto_block_threats(current_user):
                 ip_address = threat.get("ip") or threat.get("ip_address") or threat.get("indicator")
                 
                 if not ip_address:
-                    print(f"⚠️  [AUTO-BLOCK] Threat has no IP: {threat.get('indicator', 'Unknown')}")
+                    print(f"[WARN] [BLOCK] Threat has no IP: {threat.get('indicator', 'Unknown')}")
                     skipped_count += 1
                     continue
                 
                 # Validate IP
                 if not is_valid_ip(ip_address):
-                    print(f"❌ [AUTO-BLOCK] Invalid IP format: {ip_address}")
+                    print(f"[ERROR] [BLOCK] Invalid IP format: {ip_address}")
                     invalid_ips.append({
                         "ip": ip_address,
                         "threat_type": threat.get("type", "Unknown"),
@@ -2117,20 +2127,22 @@ def admin_auto_block_threats(current_user):
                     })
                     continue
                 
-                # Check if already blocked globally by admin
+                # Check if IP was EVER blocked by admin (active or inactive)
+                # Never re-add IPs that were blocked before (even if deactivated)
                 existing = BlockedThreat.query.filter_by(
                     ip_address=ip_address,
-                    is_active=True,
                     blocked_by='admin'
-                ).first()
-                
+                ).order_by(BlockedThreat.blocked_at.desc()).first()
+
                 if existing:
-                    print(f"⚠️  [AUTO-BLOCK] IP {ip_address} already blocked by admin")
+                    status_label = "active" if existing.is_active else "previously deactivated"
+                    print(f"[WARN] [BLOCK] IP {ip_address} already handled by admin ({status_label})")
                     already_blocked.append({
                         "ip": ip_address,
                         "threat_type": threat.get("type", "Unknown"),
                         "risk_score": threat.get("score", 0),
-                        "blocked_at": existing.blocked_at.isoformat()
+                        "blocked_at": existing.blocked_at.isoformat(),
+                        "status": status_label
                     })
                     continue
                 
@@ -2174,9 +2186,9 @@ def admin_auto_block_threats(current_user):
                 # Actually block the IP globally
                 try:
                     success, message = ip_blocker.block_ip(ip_address, f"admin_auto_block_{current_user.id}")
-                    print(f"✅ [AUTO-BLOCK] Blocked IP {ip_address} (success={success})")
+                    print(f"[OK] [BLOCK] Blocked IP {ip_address} (success={success})")
                 except Exception as e:
-                    print(f"⚠️  [AUTO-BLOCK] Failed to call ip_blocker: {e}")
+                    print(f"[WARN] [BLOCK] Failed to call ip_blocker: {e}")
                 
                 auto_blocked.append({
                     "id": blocked_threat.id,
@@ -2188,8 +2200,11 @@ def admin_auto_block_threats(current_user):
                     "blocked_at": blocked_threat.blocked_at.isoformat()
                 })
                 
+                # BLOCK ONLY ONE IP PER CALL (one-by-one auto-blocking)
+                break
+                
             except Exception as e:
-                print(f"❌ [AUTO-BLOCK] Error processing threat: {str(e)}")
+                print(f"[ERROR] [BLOCK] Error processing threat: {str(e)}")
                 import traceback
                 traceback.print_exc()
                 db.session.rollback()
@@ -2205,12 +2220,16 @@ def admin_auto_block_threats(current_user):
             "skipped": skipped_count
         }
         
+        # Remove blocked IPs from cache permanently
+        if auto_blocked:
+            _remove_ips_from_cache([b["ip"] for b in auto_blocked])
+        
         print(f"""
 🎯 [AUTO-BLOCK] SUMMARY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Total threats in feed: {summary['total_threats_in_feed']}
   High-risk threats: {summary['high_risk_threats']}
-  ✅ Successfully auto-blocked: {summary['successfully_auto_blocked']}
+  [OK] Successfully auto-blocked: {summary['successfully_auto_blocked']}
   ⚠️  Already blocked: {summary['already_blocked']}
   ❌ Invalid IPs: {summary['invalid_ips']}
   ⊘ Skipped: {summary['skipped']}
@@ -2230,6 +2249,104 @@ def admin_auto_block_threats(current_user):
         traceback.print_exc()
         db.session.rollback()
         return jsonify({"error": f"Auto-block failed: {str(e)}"}), 500
+
+
+def _remove_ips_from_cache(ip_addresses: list) -> None:
+    """
+    Permanently remove blocked IPs from the threat cache.
+    This prevents them from reappearing in auto-block scans.
+    """
+    try:
+        # Load current cache
+        with open(THREATS_OUTPUT, "r", encoding="utf-8") as f:
+            threats = json.load(f)
+        
+        original_count = len(threats)
+        
+        # Filter out threats with blocked IPs
+        filtered_threats = []
+        removed_count = 0
+        
+        for threat in threats:
+            threat_ip = threat.get("ip") or threat.get("ip_address") or threat.get("indicator")
+            if threat_ip in ip_addresses:
+                removed_count += 1
+                print(f"[CACHE-CLEANUP] Removing {threat_ip} from cache")
+            else:
+                filtered_threats.append(threat)
+        
+        # Write back updated cache
+        if removed_count > 0:
+            with open(THREATS_OUTPUT, "w", encoding="utf-8") as f:
+                json.dump(filtered_threats, f, indent=2)
+            print(f"[OK] [CACHE-CLEANUP] Removed {removed_count} IPs from cache ({original_count} → {len(filtered_threats)})")
+        else:
+            print(f"[CACHE-CLEANUP] No IPs removed from cache")
+            
+    except FileNotFoundError:
+        print(f"[CACHE-CLEANUP] Cache file not found: {THREATS_OUTPUT}")
+    except Exception as e:
+        print(f"[CACHE-CLEANUP] Error removing IPs from cache: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+# --- Admin: Deactivate All Auto-Blocked Threats ---
+@app.route("/api/admin/auto-blocks/deactivate-all", methods=["POST"])
+@token_required
+def admin_deactivate_all_auto_blocks(current_user):
+    """Deactivate all active admin auto-blocked threats."""
+    if current_user.role != "admin":
+        return jsonify({"error": "Unauthorized - Admin access required"}), 403
+
+    try:
+        now = datetime.utcnow()
+        blocks = BlockedThreat.query.filter_by(blocked_by='admin', is_active=True).all()
+        if not blocks:
+            return jsonify({
+                "message": "No active admin auto-blocks to deactivate",
+                "deactivated": 0
+            }), 200
+
+        for block in blocks:
+            block.is_active = False
+            block.unblocked_at = now
+            block.unblocked_by_user_id = current_user.id
+            db.session.add(block)
+
+            action_log = ThreatActionLog(
+                user_id=block.user_id,
+                action='unblock_admin_bulk',
+                ip_address=block.ip_address,
+                threat_id=block.id,
+                performed_by_user_id=current_user.id,
+                details="Admin bulk deactivate (auto-block list)"
+            )
+            db.session.add(action_log)
+
+        db.session.commit()
+
+        # Best-effort firewall unblock
+        blocked_ips = []
+        for block in blocks:
+            blocked_ips.append(block.ip_address)
+            try:
+                ip_blocker.unblock_ip(block.ip_address)
+            except Exception as e:
+                print(f"[WARNING] Failed to unblock {block.ip_address}: {e}")
+        
+        # Remove deactivated IPs from cache permanently
+        if blocked_ips:
+            _remove_ips_from_cache(blocked_ips)
+
+        return jsonify({
+            "message": "Auto-blocked threats deactivated",
+            "deactivated": len(blocks)
+        }), 200
+    except Exception as e:
+        print(f"[ERROR] admin_deactivate_all_auto_blocks failed: {e}")
+        db.session.rollback()
+        return jsonify({"error": f"Failed to deactivate auto-blocks: {str(e)}"}), 500
 
 
 # --- User: Block IP via Email Link (Secure Token) ---
@@ -2273,7 +2390,7 @@ def user_block_threat_via_email():
             print(f"[EMAIL-BLOCK] User {user_id} not found")
             return jsonify({"error": "User account not found"}), 404
         
-        print(f"✅ [EMAIL-BLOCK] Token valid for user {user.username}, IP {ip_address}")
+        print(f"[OK] [EMAIL-BLOCK] Token valid for user {user.username}, IP {ip_address}")
         
         # Validate IP address
         if not is_valid_ip(ip_address):
@@ -2342,12 +2459,12 @@ def user_block_threat_via_email():
         
         # Commit all changes
         db.session.commit()
-        print(f"✅ [EMAIL-BLOCK] Database records created for user {user.username}")
+        print(f"[OK] [EMAIL-BLOCK] Database records created for user {user.username}")
         
         # Actually block the IP on user's system
         try:
             success, message = ip_blocker.block_ip(ip_address, f"user_{user_id}_email_block")
-            print(f"✅ [EMAIL-BLOCK] IP {ip_address} blocked successfully: {message}")
+            print(f"[OK] [EMAIL-BLOCK] IP {ip_address} blocked successfully: {message}")
         except Exception as e:
             print(f"⚠️  [EMAIL-BLOCK] Warning: ip_blocker returned error: {e}")
         
@@ -2364,7 +2481,7 @@ def user_block_threat_via_email():
                 )
                 db.session.add(admin_notification)
             db.session.commit()
-            print(f"✅ [EMAIL-BLOCK] Admin notifications created")
+            print(f"[OK] [EMAIL-BLOCK] Admin notifications created")
         except Exception as e:
             print(f"⚠️  [EMAIL-BLOCK] Failed to create admin notifications: {e}")
             db.session.rollback()
@@ -2380,12 +2497,12 @@ def user_block_threat_via_email():
                     blocked_at=blocked_threat.blocked_at.strftime("%Y-%m-%d %H:%M:%S UTC")
                 )
                 msg = Message(
-                    subject=f"✅ IP Address Blocked: {ip_address}",
+                    subject=f"[OK] IP Address Blocked: {ip_address}",
                     recipients=[user.threat_subscription.email],
                     html=html_content
                 )
                 mail.send(msg)
-                print(f"✅ [EMAIL-BLOCK] Confirmation email sent to {user.threat_subscription.email}")
+                print(f"[OK] [EMAIL-BLOCK] Confirmation email sent to {user.threat_subscription.email}")
         except Exception as e:
             print(f"⚠️  [EMAIL-BLOCK] Failed to send confirmation email: {e}")
         
@@ -2501,7 +2618,7 @@ def user_unblock_threat(current_user, threat_id):
         db.session.add(action_log)
         db.session.commit()
         
-        print(f"✅ [UNBLOCK] User {current_user.username} unblocked {blocked_threat.ip_address}")
+        print(f"[OK] [UNBLOCK] User {current_user.username} unblocked {blocked_threat.ip_address}")
         
         return jsonify({
             "message": f"IP {blocked_threat.ip_address} has been unblocked",
@@ -2690,7 +2807,7 @@ def fetch_and_cache(limit=None, modified_since=None):
         return None
 
 def _send_threat_notifications(threats):
-    """Send email notifications to subscribed users for high-risk threats (with or without IPs)."""
+    """Send email notifications to subscribed users for high-risk threats with SMART DEDUPLICATION."""
     if not threats:
         print("[NOTIFY] No threats to process")
         return
@@ -2709,24 +2826,19 @@ def _send_threat_notifications(threats):
             print("[NOTIFY] No high-risk threats (score >= 75) for automated notifications")
             return
         
-        # Filter to ONLY IP-based threats for auto notifications
-        ip_threats = []
-        for t in high_risk_threats:
-            ip = t.get("ip") or t.get("ip_address") or t.get("indicator")
-            if ip and ip != "N/A" and ip != "Unknown" and is_valid_ip(ip):
-                ip_threats.append(t)
+        # Send notifications for NEW high-risk threats only (IPs, domains, URLs, etc.)
+        print(f"[NOTIFY] {len(high_risk_threats)} high-risk threats eligible for automated alerts")
         
-        if not ip_threats:
-            print("[NOTIFY] No IP-based high-risk threats for automated notifications")
-            return
+        # Cooldown period: Don't notify about same threat to same user within 24 hours
+        NOTIFICATION_COOLDOWN = 24  # hours
         
-        print(f"[NOTIFY] {len(ip_threats)} IP-based high-risk threats eligible for automated alerts")
-        for threat in ip_threats:
+        for threat in high_risk_threats:
             try:
                 # Get IP if exists (not required anymore - can send notifications for domain/URL threats too)
                 ip_address = threat.get("ip") or threat.get("ip_address") or threat.get("indicator") or "N/A"
-                threat_id = threat.get("id") or f"{threat.get('type', 'unknown')}_{threat.get('score', 0)}"
+                threat_id = threat.get("id") or f"{threat.get('indicator', 'unknown')}_{threat.get('type', 'unknown')}"
                 has_ip = ip_address != "N/A" and ip_address and ip_address != "Unknown"
+                threat_type_str = threat.get('type', 'unknown')
                 
                 for subscription in subscriptions:
                     try:
@@ -2735,8 +2847,17 @@ def _send_threat_notifications(threats):
                         if not user:
                             continue
                         
-                        # NO DUPLICATE CHECK - Send notifications every time high-risk threats exist
-                        # (User requested immediate notifications without delays)
+                        # CHECK DUPLICATE: Has this threat already been sent to this user?
+                        recent_notification = ThreatActionLog.query.filter(
+                            ThreatActionLog.user_id == user.id,
+                            ThreatActionLog.action == 'email_sent',
+                            ThreatActionLog.ip_address == ip_address,
+                            ThreatActionLog.timestamp > datetime.utcnow() - timedelta(hours=NOTIFICATION_COOLDOWN)
+                        ).first()
+                        
+                        if recent_notification:
+                            # Already notified about this threat recently, skip
+                            continue
                         
                         # Check if user is premium (for blocking capability)
                         is_premium = (hasattr(user, 'subscription') and user.subscription == "premium")
@@ -2808,12 +2929,14 @@ def _send_threat_notifications(threats):
                                 ip_address=ip_address,
                                 performed_by_user_id=None,
                                 details=json.dumps({
+                                    'threat_id': threat_id,
                                     'threat_type': threat_data['threat_type'],
                                     'risk_score': threat.get('score', 0),
                                     'sent_to': subscription.email,
                                     'subscribed': True,
                                     'has_ip': has_ip,
-                                    'via': 'automatic_dashboard_notification'
+                                    'via': 'automatic_notification',
+                                    'deduped': False
                                 })
                             )
                             db.session.add(action_log)
@@ -2822,7 +2945,11 @@ def _send_threat_notifications(threats):
                             
                             user_type = "premium" if is_premium else "free"
                             ip_info = f"IP {ip_address}" if has_ip else f"{threat.get('type', 'threat')} (no IP)"
-                            print(f"[NOTIFY] ✅ Sent alert to {user.username} ({user_type}) for {ip_info}")
+                            print(f"[NOTIFY] [OK] Sent alert to {user.username} ({user_type}) for {ip_info}")
+                        else:
+                            # Email failed - don't log as success, but continue to next user
+                            print(f"[NOTIFY] [SKIP] Email failed for {user.username}, will retry in next cycle")
+                            
                     except Exception as e:
                         print(f"[NOTIFY] Error notifying user: {str(e)}")
                         continue
@@ -2834,7 +2961,12 @@ def _send_threat_notifications(threats):
             except Exception as e:
                 print(f"[NOTIFY] Error processing threat: {str(e)}")
                 continue
-        print(f"[NOTIFY] 📧 Sent {notifications_sent} total notifications this cycle")
+        
+        # Rate limit summary
+        if notifications_sent == 0:
+            print(f"[NOTIFY] [INFO] No new notifications sent (all threats already notified recently or failed)")
+        else:
+            print(f"[NOTIFY] [EMAIL] Sent {notifications_sent} notifications this cycle")
     except Exception as e:
         print(f"[ERROR] _send_threat_notifications: {str(e)}")
         import traceback
@@ -2843,11 +2975,179 @@ def _send_threat_notifications(threats):
             db.session.rollback()
         except:
             pass
+
+def _auto_block_high_risk_threats(threats):
+    """Automatically block high-risk threat IPs one by one with time delay."""
+    if not AUTO_BLOCK_ENABLED:
+        return
+    
+    if not threats:
+        print("[AUTO-BLOCK] No threats to process")
+        return
+    
+    try:
+        import time
+        
+        # Get or create system admin user for auto-blocking
+        admin_user = User.query.filter_by(role="admin").first()
+        if not admin_user:
+            print("[AUTO-BLOCK] No admin user found, creating system admin...")
+            admin_user = User(
+                username="system_admin",
+                email="system@threatguard.local",
+                phone="",
+                role="admin",
+                subscription="premium"
+            )
+            admin_user.set_password("admin123")
+            db.session.add(admin_user)
+            db.session.commit()
+            print(f"[AUTO-BLOCK] Created system admin user (ID: {admin_user.id})")
+        else:
+            print(f"[AUTO-BLOCK] Using admin user: {admin_user.username} (ID: {admin_user.id})")
+        
+        # Filter for high-risk threats with valid IPs
+        high_risk_threats = [
+            t for t in threats 
+            if t.get("score", 0) >= AUTO_BLOCK_THRESHOLD  # High risk (score >= 75)
+            and (t.get("ip") or t.get("ip_address") or t.get("IP Address"))  # Has IP
+        ]
+        
+        if not high_risk_threats:
+            print(f"[AUTO-BLOCK] No high-risk threats (score >= {AUTO_BLOCK_THRESHOLD}) with IPs for auto-blocking")
+            return
+        
+        print(f"[AUTO-BLOCK] Found {len(high_risk_threats)} high-risk threats eligible for blocking")
+        
+        # Get already blocked IPs to avoid duplicates
+        blocked_ips = set()
+        try:
+            existing_blocks = BlockedThreat.query.filter_by(is_active=True).all()
+            blocked_ips = {block.ip_address for block in existing_blocks}
+            print(f"[AUTO-BLOCK] Currently blocked IPs: {len(blocked_ips)}")
+        except Exception as e:
+            print(f"[AUTO-BLOCK] Warning: Could not fetch existing blocks: {e}")
+        
+        # Block IPs one by one with delay
+        blocked_count = 0
+        skipped_count = 0
+        
+        for threat in high_risk_threats[:AUTO_BLOCK_MAX_PER_CYCLE]:  # Limit per cycle
+            try:
+                # Extract IP
+                ip_address = (
+                    threat.get("ip") or 
+                    threat.get("ip_address") or 
+                    threat.get("IP Address") or 
+                    threat.get("indicator")
+                )
+                
+                if not ip_address:
+                    continue
+                
+                # Check if already blocked
+                if ip_address in blocked_ips:
+                    print(f"[AUTO-BLOCK] [SKIP] IP already blocked: {ip_address}")
+                    skipped_count += 1
+                    continue
+                
+                # Get threat details
+                threat_type = threat.get("type") or threat.get("Type") or "Unknown"
+                risk_score = threat.get("score") or threat.get("Score") or 75
+                risk_category = threat.get("severity") or threat.get("Risk Category") or "High"
+                summary = threat.get("summary") or threat.get("Summary") or f"Auto-blocked high-risk threat (Score: {risk_score})"
+                
+                # Block the IP using IP blocker
+                success, message = ip_blocker.block_ip(ip_address, f"Auto-blocked: {threat_type} (Score: {risk_score})")
+                
+                if success:
+                    # Create blocked threat record in database
+                    blocked_threat = BlockedThreat(
+                        user_id=admin_user.id,  # Admin user who owns this block
+                        ip_address=ip_address,
+                        threat_type=threat_type,
+                        risk_category=risk_category,
+                        risk_score=risk_score,
+                        summary=summary,
+                        blocked_by='admin',  # Mark as admin-level block
+                        blocked_by_user_id=admin_user.id,  # Admin who performed the block
+                        reason=f"Auto-blocked by system (Score: {risk_score})",
+                        is_active=True,
+                        blocked_at=datetime.utcnow()
+                    )
+                    db.session.add(blocked_threat)
+                    
+                    # Log the action
+                    action_log = ThreatActionLog(
+                        user_id=admin_user.id,  # Admin user
+                        action='auto_blocked',
+                        ip_address=ip_address,
+                        threat_id=None,  # Will be updated after commit
+                        performed_by_user_id=None,  # Automated action (system)
+                        details=json.dumps({
+                            'threat_type': threat_type,
+                            'risk_score': risk_score,
+                            'risk_category': risk_category,
+                            'auto_blocked': True,
+                            'system_automated': True,
+                            'cycle_time': datetime.utcnow().isoformat()
+                        })
+                    )
+                    db.session.add(action_log)
+                    
+                    try:
+                        db.session.commit()
+                        
+                        # Update action log with threat_id
+                        action_log.threat_id = blocked_threat.id
+                        db.session.commit()
+                        
+                        blocked_ips.add(ip_address)
+                        blocked_count += 1
+                        print(f"[AUTO-BLOCK] [OK] Blocked IP: {ip_address} | Type: {threat_type} | Score: {risk_score} | ID: {blocked_threat.id}")
+                        
+                        # Add to blocked count
+                        if blocked_count >= AUTO_BLOCK_MAX_PER_CYCLE:
+                            print(f"[AUTO-BLOCK] Reached max blocks per cycle ({AUTO_BLOCK_MAX_PER_CYCLE}), stopping")
+                            break
+                        
+                        # Delay before next block
+                        if blocked_count < AUTO_BLOCK_MAX_PER_CYCLE and blocked_count < len(high_risk_threats):
+                            print(f"[AUTO-BLOCK] Waiting {AUTO_BLOCK_DELAY}s before next block...")
+                            time.sleep(AUTO_BLOCK_DELAY)
+                            
+                    except Exception as e:
+                        db.session.rollback()
+                        print(f"[AUTO-BLOCK] [ERROR] Failed to save block record for {ip_address}: {e}")
+                else:
+                    print(f"[AUTO-BLOCK] [FAIL] Could not block {ip_address}: {message}")
+                    
+            except Exception as e:
+                print(f"[AUTO-BLOCK] Error processing threat: {str(e)}")
+                continue
+        
+        # Summary
+        print(f"[AUTO-BLOCK] Summary: Blocked={blocked_count}, Skipped={skipped_count}, Total eligible={len(high_risk_threats)}")
+        
+    except Exception as e:
+        print(f"[ERROR] _auto_block_high_risk_threats: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        try:
+            db.session.rollback()
+        except:
+            pass
 def _background_updater():
-    """Background thread to send notifications using cached threats."""
+    """Background thread to send notifications and auto-block high-risk threats."""
     import time
-    print(f"[BACKGROUND] ✅ Starting threat notification updater (interval={THREATS_POLL_INTERVAL}s = {THREATS_POLL_INTERVAL//60} minute)")
+    print(f"[BACKGROUND] Starting threat notification & auto-blocking system")
+    print(f"[BACKGROUND] Polling interval: {THREATS_POLL_INTERVAL}s ({THREATS_POLL_INTERVAL//60} minute)")
     print(f"[BACKGROUND] Will check for new high-risk threats every {THREATS_POLL_INTERVAL} seconds")
+    print(f"[BACKGROUND] Auto-blocking: {'ENABLED' if AUTO_BLOCK_ENABLED else 'DISABLED'}")
+    if AUTO_BLOCK_ENABLED:
+        print(f"[BACKGROUND]   - Threshold: Score >= {AUTO_BLOCK_THRESHOLD}")
+        print(f"[BACKGROUND]   - Delay between blocks: {AUTO_BLOCK_DELAY}s")
+        print(f"[BACKGROUND]   - Max blocks per cycle: {AUTO_BLOCK_MAX_PER_CYCLE}")
     
     cycle = 0
     
@@ -2874,7 +3174,7 @@ def _background_updater():
                 try:
                     with open(THREATS_OUTPUT, "r", encoding="utf-8") as f:
                         threats = json.load(f)
-                    print(f"[BACKGROUND] ✅ Loaded {len(threats) if threats else 0} cached threats")
+                    print(f"[BACKGROUND] Loaded {len(threats) if threats else 0} cached threats")
                     
                     if threats:
                         # Count high-risk threats
@@ -2884,27 +3184,34 @@ def _background_updater():
                         print(f"[BACKGROUND] IP-based high-risk threats: {len(ip_based)}")
                         
                 except FileNotFoundError:
-                    print(f"[BACKGROUND] ⚠️  Cache file not found: {THREATS_OUTPUT}")
+                    print(f"[BACKGROUND] Cache file not found: {THREATS_OUTPUT}")
                     print(f"[BACKGROUND] Will try again in next cycle ({THREATS_POLL_INTERVAL}s)")
                 except Exception as e:
-                    print(f"[BACKGROUND] ❌ Error reading cache: {e}")
+                    print(f"[BACKGROUND] Error reading cache: {e}")
                 
                 # Send notifications if we have threats
                 if threats and len(threats) > 0:
-                    print(f"[BACKGROUND] 📧 Processing notifications...")
+                    print(f"[BACKGROUND] Processing notifications...")
                     _send_threat_notifications(threats)
+                    
+                    # Auto-block high-risk threats
+                    if AUTO_BLOCK_ENABLED:
+                        print(f"[BACKGROUND] Processing auto-blocking...")
+                        _auto_block_high_risk_threats(threats)
+                    else:
+                        print(f"[BACKGROUND] Auto-blocking disabled")
                 else:
-                    print(f"[BACKGROUND] ℹ️  No threats available to notify")
+                    print(f"[BACKGROUND] No threats available to notify")
                 
                 cycle += 1
                 print(f"[BACKGROUND] Cycle #{cycle} complete")
                 
         except Exception as e:
-            print(f"[BACKGROUND] ❌ ERROR in cycle: {e}")
+            print(f"[BACKGROUND] Error in cycle: {e}")
             import traceback
             traceback.print_exc()
         
-        print(f"[BACKGROUND] ⏰ Sleeping {THREATS_POLL_INTERVAL}s until next cycle...")
+        print(f"[BACKGROUND] Sleeping {THREATS_POLL_INTERVAL}s until next cycle...")
         print(f"{'='*60}\n")
         time.sleep(THREATS_POLL_INTERVAL)
 
@@ -2980,7 +3287,7 @@ if __name__ == "__main__":
         run_main = True
     
     print("\n" + "="*60)
-    print("🚀 STARTING THREATGUARD BACKEND")
+    print("[STARTUP] STARTING THREATGUARD BACKEND")
     print("="*60)
     
     if run_main:
@@ -2988,18 +3295,20 @@ if __name__ == "__main__":
         # Start cache population in separate thread (non-blocking)
         cache_thread = threading.Thread(target=populate_cache_async, daemon=True)
         cache_thread.start()
-        print("✅ Cache updater thread started")
+        print("[OK] Cache updater thread started")
         
         # Start notification updater
         updater = threading.Thread(target=_background_updater, daemon=True)
         updater.start()
-        print("✅ Background threat notification processor started")
-        print(f"📧 Automatic notifications enabled (every 1 minute)")
+        print("[OK] Background threat notification & auto-blocking processor started")
+        print(f"[EMAIL] Automatic notifications enabled (every {THREATS_POLL_INTERVAL//60} minute)")
+        if AUTO_BLOCK_ENABLED:
+            print(f"[BLOCK] Auto-blocking enabled (threshold: {AUTO_BLOCK_THRESHOLD}, max/cycle: {AUTO_BLOCK_MAX_PER_CYCLE})")
     else:
-        print("⚠️  Running in reloader mode - background threads will start after reload")
+        print("[WARN] Running in reloader mode - background threads will start after reload")
     
     print("="*60)
-    print(f"🌐 Backend running on http://0.0.0.0:5000")
+    print(f"[RUNNING] Backend running on http://0.0.0.0:5000")
     print("="*60 + "\n")
     
     app.run(debug=False, host="0.0.0.0", port=5000)

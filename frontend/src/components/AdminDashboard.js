@@ -319,11 +319,14 @@ function AdminDashboard({ logout }) {
         console.log("✅ Auto-block complete:", data.summary);
         
         // Refresh blocked threats list
-        fetchUserBlocks();
+        await fetchUserBlocks();
         
-        // Show notification to admin
+        // Refresh threats list to remove blocked IPs from cache
+        await fetchThreats();
+        
+        // Show notification to admin only if new IPs were blocked
         if (data.auto_blocked && data.auto_blocked.length > 0) {
-          alert(`🛡️ Auto-Blocked ${data.auto_blocked.length} high-risk threats!\n\nSummary:\n- Blocked: ${data.summary.successfully_auto_blocked}\n- Already blocked: ${data.summary.already_blocked}\n- Invalid IPs: ${data.summary.invalid_ips}`);
+          alert(`🛡️ Auto-Blocked ${data.auto_blocked.length} high-risk threat(s)!\n\nSummary:\n- Blocked: ${data.summary.successfully_auto_blocked}\n- Already blocked: ${data.summary.already_blocked}\n- Invalid IPs: ${data.summary.invalid_ips}`);
         }
       } else {
         console.error("Auto-block failed:", res.status);
@@ -370,7 +373,7 @@ function AdminDashboard({ logout }) {
   // DEACTIVATE ALL AUTO-BLOCKED IPS
   const handleDeactivateAllBlockedIPs = async () => {
     const autoBlockedCount = userBlocks.filter(b => b.blocked_by === 'admin' && b.is_active).length;
-    
+
     if (autoBlockedCount === 0) {
       alert("No active auto-blocked IPs to deactivate.");
       return;
@@ -385,35 +388,24 @@ function AdminDashboard({ logout }) {
       const rawToken = normalizeToken(currentToken);
       if (!rawToken) return;
 
-      // Deactivate each active auto-blocked IP
-      const activeAutoBlocked = userBlocks.filter(b => b.blocked_by === 'admin' && b.is_active);
-      let successCount = 0;
-      let failCount = 0;
+      const res = await fetch(`${API_URL}/admin/auto-blocks/deactivate-all`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${rawToken}`,
+        },
+      });
 
-      for (const block of activeAutoBlocked) {
-        try {
-          const res = await fetch(`${API_URL}/unblock-threat/${block.id}`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${rawToken}`,
-            },
-          });
-
-          if (res.ok) {
-            successCount++;
-          } else {
-            failCount++;
-          }
-        } catch (err) {
-          failCount++;
-        }
+      if (!res.ok) {
+        const data = await res.json();
+        alert(`❌ Failed to deactivate: ${data.error || 'Unknown error'}`);
+        return;
       }
 
-      // Refresh blocked threats list
+      const data = await res.json();
       await fetchUserBlocks();
-
-      alert(`✅ Deactivation complete!\n- Successfully deactivated: ${successCount}\n- Failed: ${failCount}`);
+      await fetchThreats();
+      alert(`✅ Deactivated ${data.deactivated} auto-blocked IPs. They have been removed from cache permanently.`);
     } catch (err) {
       console.error("Error deactivating all blocked IPs:", err);
       alert("❌ Failed to deactivate all blocked IPs");
@@ -472,14 +464,20 @@ function AdminDashboard({ logout }) {
     fetchThreats();
   }, [selectedCategory]);
 
-  // Auto-block threats when admin dashboard loads
+  // Auto-block threats on load and every 5 minutes
   useEffect(() => {
-    const timer = setTimeout(() => {
-      console.log("⏰ Initiating auto-block on admin dashboard load...");
+    const runAutoBlock = () => {
+      console.log("⏰ Initiating auto-block on admin dashboard...");
       autoBlockThreats();
-    }, 1000); // Wait 1 second for threats to load
+    };
 
-    return () => clearTimeout(timer);
+    const initialTimer = setTimeout(runAutoBlock, 1000); // Wait 1 second for threats to load
+    const interval = setInterval(runAutoBlock, 5 * 60 * 1000);
+
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(interval);
+    };
   }, []);
 
 
@@ -870,13 +868,12 @@ function AdminDashboard({ logout }) {
         <p style={{ fontSize: '0.9rem', color: '#ccc', marginBottom: '1rem' }}>
           Automatically blocks all threats with risk score ≥ 75 from the threat feed.
         </p>
-        {userBlocks.length === 0 ? (
+        {userBlocks.filter(b => b.blocked_by === 'admin' && b.is_active).length === 0 ? (
           <p style={{ color: '#999' }}>No auto-blocked threats yet. Run scan to identify high-risk IPs.</p>
         ) : (
           <div>
             <p style={{ fontSize: '0.9rem', color: '#ccc', marginBottom: '1rem' }}>
-              <strong>Total Auto-Blocked:</strong> {userBlocks.filter(b => b.blocked_by === 'admin').length} IPs | 
-              <strong style={{ marginLeft: '1rem' }}>Active:</strong> {userBlocks.filter(b => b.blocked_by === 'admin' && b.is_active).length}
+              <strong>Total Auto-Blocked (Active):</strong> {userBlocks.filter(b => b.blocked_by === 'admin' && b.is_active).length} IPs
             </p>
             <table className="user-table" style={{ backgroundColor: "#0d2818" }}>
               <thead>
@@ -893,7 +890,7 @@ function AdminDashboard({ logout }) {
               </thead>
               <tbody>
                 {userBlocks
-                  .filter(b => b.blocked_by === 'admin')
+                  .filter(b => b.blocked_by === 'admin' && b.is_active)
                   .sort((a, b) => new Date(b.blocked_at) - new Date(a.blocked_at))
                   .map((block, idx) => (
                     <tr key={block.id} style={{ backgroundColor: idx % 2 === 0 ? "#0d2818" : "#132419" }}>
