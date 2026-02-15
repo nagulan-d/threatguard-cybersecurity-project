@@ -1,399 +1,367 @@
-# 🛡️ Auto-Blocking System - Complete Implementation Guide
+# 🛡️ AUTO-BLOCKING HIGH-SEVERITY THREATS
 
 ## Overview
-
-The **Auto-Blocking System** automatically identifies and blocks high-risk threats (IP addresses with risk scores ≥ 75) from the threat intelligence feed when an admin accesses the admin dashboard.
-
----
-
-## ✨ Features
-
-### 1. **Automatic High-Risk Threat Detection**
-- Scans all threats in the cache (recent_threats.json)
-- Identifies threats with risk scores ≥ 75
-- Filters only valid IP addresses (IPv4 & IPv6)
-
-### 2. **Intelligent Blocking Logic**
-- ✅ Blocks new high-risk IPs automatically
-- ⚠️ Skips IPs already blocked by admins
-- ❌ Rejects invalid IP formats
-- 📊 Tracks statistics on blocked/skipped/invalid IPs
-
-### 3. **Admin Dashboard Integration**
-- Auto-blocks trigger on dashboard load (1 second delay)
-- Manual "Scan & Block Now" button for on-demand blocking
-- Real-time display of auto-blocked threats
-- Status indicators (Active/Inactive)
-- Risk score color coding (Red for High, Orange for Medium, Yellow for Low)
-
-### 4. **Comprehensive Audit Trail**
-- Database records of all auto-block actions
-- ThreatActionLog entries marked with "auto_block" action type
-- Tracked by admin user who triggered the action
-- Contains threat details (type, score, category, summary)
-
-### 5. **Smart Notifications**
-- Alert shown to admin with blocking summary
-- Shows count of successfully blocked IPs
-- Shows already-blocked count
-- Shows invalid IP count
+Automatically blocks high-severity threats (score ≥ 75) from your live threat feed in:
+- ✅ **Windows Firewall** (both inbound and outbound)
+- ✅ **Kali VM** (via iptables)
 
 ---
 
-## 🔄 How It Works
+## 🚀 Quick Start
 
-### Step 1: Admin Dashboard Load
-```
-Admin logs in and navigates to /admin dashboard
-↓
-Frontend loads core admin data
-↓
-After 1 second, autoBlockThreats() is called
-```
+### Option 1: Run Once (Manual Blocking)
 
-### Step 2: Threat Scanning
-```
-Backend fetches threats from recent_threats.json cache
-↓
-Filters threats with score ≥ 75 (HIGH risk)
-↓
-For each threat:
-  - Extract IP address
-  - Validate IP format (IPv4/IPv6)
-  - Check if already blocked by admin
-  - Skip if invalid or duplicate
+**Windows (Run as Administrator):**
+```powershell
+# PowerShell (run as admin)
+cd backend
+.\AUTO_BLOCK.ps1
 ```
 
-### Step 3: Blocking
-```
-For each new high-risk IP:
-  - Create BlockedThreat record in database
-  - Set blocked_by = 'admin'
-  - Set blocked_by_user_id = current admin
-  - Create ThreatActionLog entry
-  - Call ip_blocker.block_ip() for global blocking
+**Or Python:**
+```bash
+cd backend
+python auto_block_high_threats.py
 ```
 
-### Step 4: Response & Display
-```
-Return summary to frontend:
-  - List of auto-blocked IPs
-  - Already-blocked IPs
-  - Invalid IP addresses
-  - Statistics summary
+### Option 2: Continuous Monitoring (Background Service)
 
-Display in admin dashboard:
-  - Auto-blocked threats table
-  - Real-time refresh of blocked threats list
+```bash
+cd backend
+python continuous_auto_blocker.py
 ```
 
----
+This runs continuously and checks for new threats every 60 seconds.
 
-## 📡 API Endpoints
+### Option 3: Via API Endpoint
 
-### Auto-Block Endpoint
-```http
-POST /api/admin/auto-block-threats
-Authorization: Bearer <token>
-```
-
-**Response:**
-```json
-{
-  "message": "Auto-blocked X high-risk threats",
-  "auto_blocked": [
-    {
-      "id": 123,
-      "ip": "192.168.1.1",
-      "threat_type": "Malware",
-      "risk_score": 85.5,
-      "category": "Malware",
-      "summary": "Known malware distribution IP",
-      "blocked_at": "2026-01-28T12:34:56.789Z"
-    }
-  ],
-  "already_blocked": [
-    {
-      "ip": "10.0.0.1",
-      "threat_type": "Phishing",
-      "risk_score": 78.0,
-      "blocked_at": "2026-01-27T10:00:00Z"
-    }
-  ],
-  "invalid_ips": [
-    {
-      "ip": "invalid_ip_format",
-      "threat_type": "Unknown",
-      "reason": "Invalid IP format"
-    }
-  ],
-  "summary": {
-    "total_threats_in_feed": 30,
-    "high_risk_threats": 12,
-    "successfully_auto_blocked": 8,
-    "already_blocked": 3,
-    "invalid_ips": 1,
-    "skipped": 0
-  }
-}
-```
-
-### View All Blocked Threats
-```http
-GET /api/admin/blocked-threats?blocked_by=admin&is_active=true
-Authorization: Bearer <token>
-```
-
----
-
-## 🗄️ Database Impact
-
-### New Records Created
-- **BlockedThreat**: One record per successfully blocked IP
-  - user_id: Admin's ID
-  - blocked_by: 'admin'
-  - blocked_by_user_id: Admin's ID
-  - reason: "Auto-blocked: High-risk threat (score X)"
-
-- **ThreatActionLog**: One entry per auto-block
-  - action: 'auto_block'
-  - threat_id: Reference to BlockedThreat
-  - details: JSON with threat info and timestamp
-
----
-
-## 🎨 Frontend Components
-
-### Auto-Block Function
 ```javascript
-const autoBlockThreats = async () => {
-  // Called on dashboard load and manually
-  // Calls POST /api/admin/auto-block-threats
-  // Refreshes blocked threats list
-  // Shows alert with summary
-}
+// Trigger from frontend or curl
+fetch('/api/auto-block-high-threats', {method: 'POST'})
 ```
-
-### Auto-Blocked Threats Section
-- **Location**: Admin Dashboard, below "Latest Threats"
-- **Style**: Green-themed (danger/security theme)
-- **Shows**: Table of auto-blocked IPs with:
-  - IP Address (monospace font)
-  - Threat Type
-  - Risk Score (color-coded)
-  - Category
-  - Reason
-  - Blocked At (timestamp)
-  - Status (Active/Inactive)
-
-### Manual Block Button
-- **Label**: "🔄 Scan & Block Now"
-- **Color**: Green (#28a745)
-- **Action**: Manually triggers autoBlockThreats()
-- **Use Case**: Admin wants to check for new threats immediately
 
 ---
 
-## 🔐 Security Considerations
+## 📋 What Gets Blocked
 
-### Authorization
-- ✅ Admin-only endpoint (checked at backend)
-- ✅ Requires valid JWT token
-- ✅ Only admins can view auto-blocked threats
+### Criteria
+- **Severity Score:** ≥ 75 (High-severity only)
+- **Type:** Must have a valid IPv4 address
+- **Categories:** All (Phishing, Ransomware, Malware, DDoS, Exploits, etc.)
 
-### IP Validation
-- ✅ Strict IP format validation (IPv4 & IPv6)
-- ✅ Rejects invalid IP strings
-- ✅ Prevents blocking of non-IP threat indicators
+### Example Threats Blocked
+```
+1. Phishing: 185.220.101.15 (Score: 92) - Credential theft campaign
+2. Ransomware: 198.98.51.22 (Score: 98) - LockBit C2 server
+3. Malware: 203.0.113.50 (Score: 94) - Emotet infrastructure
+4. DDoS: 185.143.223.45 (Score: 93) - Mirai botnet C2
+5. Exploits: 45.130.229.168 (Score: 96) - CVE-2024-4577 scanner
+```
+
+---
+
+## 🔧 How It Works
+
+### Process Flow
+```
+1. Fetch latest threats from /api/threats
+2. Filter for high-severity (score ≥ 75) with IPs
+3. Check if IP already blocked
+4. Block in Windows Firewall (PowerShell)
+   - Create inbound block rule
+   - Create outbound block rule
+5. Block in Kali VM (SSH + iptables)
+   - Block incoming traffic
+   - Block outgoing traffic
+6. Save to blocked IPs tracker
+7. Generate summary report
+```
 
 ### Duplicate Prevention
-- ✅ Checks for existing admin blocks
-- ✅ Won't re-block already-blocked IPs
-- ✅ Maintains data integrity
-
-### Audit Trail
-- ✅ Every auto-block logged with timestamp
-- ✅ Admin who triggered stored
-- ✅ Threat details preserved for review
-- ✅ Reversible (can be unblocked later)
+- ✅ Tracks all blocked IPs in `auto_blocked_ips.json`
+- ✅ Skips already-blocked IPs
+- ✅ Persists across restarts
 
 ---
 
-## 📊 Monitoring & Statistics
+## 📁 Files Created
 
-### Admin Dashboard Display
-- **Total Auto-Blocked**: Count of IPs blocked by auto-system
-- **Status Indicators**: 🟢 Active or ⚫ Inactive
-- **Risk Score Colors**:
-  - 🔴 Red: Score ≥ 75 (High)
-  - 🟠 Orange: Score 50-74 (Medium)
-  - 🟡 Yellow: Score < 50 (Low)
+### Main Scripts
+- `auto_block_high_threats.py` - Core blocking engine
+- `continuous_auto_blocker.py` - Background monitoring service
+- `AUTO_BLOCK.ps1` - PowerShell launcher (admin)
+- `kali_blocker.sh` - Kali VM blocking script
 
-### Backend Console Output
+### Data Files
+- `auto_blocked_ips.json` - Tracking file for blocked IPs
+- `/tmp/blocked_ips.txt` - IP list for Kali VM (generated)
+
+---
+
+## 🖥️ Windows Firewall Blocking
+
+### How It Works
+Creates firewall rules using PowerShell:
+```powershell
+New-NetFirewallRule -DisplayName "CTI_AutoBlock_<IP>" 
+                    -Direction Inbound 
+                    -Action Block 
+                    -RemoteAddress <IP>
 ```
-🛡️ [AUTO-BLOCK] Starting automatic threat blocking system...
-✅ [AUTO-BLOCK] Loaded 30 threats from cache
-📊 [AUTO-BLOCK] Found 12 high-risk threats (score >= 75)
-✅ [AUTO-BLOCK] Blocked IP 192.168.1.1 (success=true)
-⚠️  [AUTO-BLOCK] IP 10.0.0.1 already blocked by admin
-❌ [AUTO-BLOCK] Invalid IP format: invalid_ip
-🎯 [AUTO-BLOCK] SUMMARY
-━━━━━━━━━━━━━━━━━━━━━━━━
-  Total threats: 30
-  High-risk: 12
-  ✅ Successfully auto-blocked: 8
-  ⚠️  Already blocked: 3
-  ❌ Invalid IPs: 1
-  ⊘ Skipped: 0
+
+### View Blocked IPs
+```powershell
+Get-NetFirewallRule -DisplayName "CTI_AutoBlock*"
+```
+
+### Manual Unblock
+```powershell
+# Via script
+python auto_block_high_threats.py --unblock <IP>
+
+# Or PowerShell
+Get-NetFirewallRule -DisplayName "*<IP>*" | Remove-NetFirewallRule
 ```
 
 ---
 
-## 🚀 Usage Workflow
+## 🐧 Kali VM Blocking
 
-### Scenario 1: Admin Logs In
-1. Admin navigates to `/admin` dashboard
-2. System loads users, websites, threats
-3. After 1 second, auto-block scan runs
-4. High-risk threats from threat feed are blocked
-5. Admin sees "Auto-Blocked High-Risk Threats" section
-6. Green alert shows summary of blocked IPs
+### Method 1: Automatic (SSH)
+Requires `sshpass` or PowerShell SSH:
+- Auto-connects via SSH
+- Runs iptables commands
+- Blocks incoming + outgoing traffic
 
-### Scenario 2: Admin Wants Immediate Scan
-1. Admin clicks "🔄 Scan & Block Now" button
-2. System immediately scans threat feed again
-3. Any new high-risk threats are blocked
-4. Updated table refreshes automatically
-5. Alert shows new blocking summary
+### Method 2: Manual Script
+1. **Generate IP list on Windows:**
+   ```bash
+   python -c "import json; data=json.load(open('auto_blocked_ips.json')); open('/tmp/blocked_ips.txt','w').write('\n'.join(data['blocked_ips']))"
+   ```
 
-### Scenario 3: Reviewing Blocked Threats
-1. Admin can view "🛡️ Auto-Blocked High-Risk Threats" section
-2. Table shows all auto-blocked IPs with details
-3. Can filter by status (Active/Inactive)
-4. Can see when each IP was blocked and why
-5. Can manually unblock if needed (via admin IP blocking menu)
+2. **Copy to Kali VM:**
+   ```bash
+   scp /tmp/blocked_ips.txt kali@192.168.56.101:/tmp/
+   ```
+
+3. **Run on Kali:**
+   ```bash
+   sudo bash kali_blocker.sh
+   ```
+
+### View Blocked IPs on Kali
+```bash
+sudo iptables -L INPUT -v -n | grep DROP
+sudo iptables -L OUTPUT -v -n | grep DROP
+```
+
+### Unblock on Kali
+```bash
+sudo iptables -D INPUT -s <IP> -j DROP
+sudo iptables -D OUTPUT -d <IP> -j DROP
+```
 
 ---
 
 ## ⚙️ Configuration
 
-### Auto-Block Trigger
-- **Location**: AdminDashboard.js useEffect
-- **Delay**: 1 second after component mount
-- **Frequency**: Once per dashboard load
+### Environment Variables (.env)
+```env
+# Auto-blocking settings
+AUTO_BLOCK_ENABLED=true
+AUTO_BLOCK_THRESHOLD=75           # Block threats with score >= 75
+AUTO_BLOCK_CHECK_INTERVAL=60      # Check every 60 seconds (continuous mode)
+AUTO_BLOCK_MAX_PER_CYCLE=10       # Max blocks per cycle
 
-### Risk Score Threshold
-- **Location**: app.py POST /api/admin/auto-block-threats
-- **Current**: score >= 75 (HIGH risk)
-- **To Change**: Edit line in auto-block endpoint
+# Kali VM settings
+KALI_VM_ENABLED=true
+KALI_VM_IP=192.168.56.101
+KALI_VM_USER=kali
+KALI_VM_PASSWORD=kali
+KALI_VM_PORT=22
+```
 
-### Database Models
-- **BlockedThreat**: Stores blocked IPs
-- **ThreatActionLog**: Tracks all blocking actions
-- **User**: Links blocks to admin who triggered them
+---
+
+## 📊 API Endpoints
+
+### Trigger Auto-Blocking
+```http
+POST /api/auto-block-high-threats
+```
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Auto-blocking started. Check console for progress."
+}
+```
+
+### Get Blocked IPs
+```http
+GET /api/blocked-ips
+```
+**Response:**
+```json
+{
+  "success": true,
+  "blocked_ips": ["185.220.101.15", "198.98.51.22", ...],
+  "count": 30,
+  "last_updated": "2026-02-14T10:30:00"
+}
+```
 
 ---
 
 ## 🧪 Testing
 
-### Test Case 1: Basic Auto-Blocking
+### Test Auto-Blocking
 ```bash
-1. Login as admin
-2. Go to Admin Dashboard
-3. Check console for "[AUTO-BLOCK]" messages
-4. Verify alerts appear
-5. Check "Auto-Blocked High-Risk Threats" table
-6. Confirm IPs are listed
+cd backend
+
+# Dry run - see what would be blocked
+python auto_block_high_threats.py
+
+# Check results
+cat auto_blocked_ips.json
 ```
 
-### Test Case 2: Manual Scan
-```bash
-1. Click "🔄 Scan & Block Now" button
-2. Watch console for blocking activity
-3. Verify threat table updates
-4. Check new blocks appear in table
+### Verify Windows Firewall Rules
+```powershell
+# List all CTI auto-block rules
+Get-NetFirewallRule -DisplayName "CTI_AutoBlock*" | Format-Table DisplayName, Direction, Action
+
+# Count rules
+(Get-NetFirewallRule -DisplayName "CTI_AutoBlock*").Count
 ```
 
-### Test Case 3: Duplicate Prevention
+### Verify Kali VM (if enabled)
 ```bash
-1. Auto-block scan runs (blocks IP A)
-2. Run scan again
-3. Verify IP A is in "already_blocked" list
-4. Confirm not re-blocked
-```
-
-### Test Case 4: Data Integrity
-```bash
-1. Auto-block several IPs
-2. Check BlockedThreat table in database
-3. Verify ThreatActionLog entries exist
-4. Confirm all fields populated correctly
+ssh kali@192.168.56.101 "sudo iptables -L INPUT -v -n | grep DROP | wc -l"
 ```
 
 ---
 
-## 📝 Code Locations
+## 📈 Example Output
 
-### Backend
-- **Main Logic**: `backend/app.py` line ~1625
-- **Endpoint**: `POST /api/admin/auto-block-threats`
-- **Models**: BlockedThreat, ThreatActionLog
-- **Dependencies**: threat_processor.py (IP validation)
+```
+======================================================================
+🔥 AUTO-BLOCKING HIGH-SEVERITY THREATS
+======================================================================
+⚙️  Threshold: Score >= 75
+🖥️  Windows Firewall: Enabled
+🐧 Kali VM: Enabled
+======================================================================
 
-### Frontend
-- **Component**: `frontend/src/components/AdminDashboard.js`
-- **Function**: `autoBlockThreats()` line ~302
-- **UI Section**: Auto-Blocked Threats display line ~682
-- **Manual Button**: "Scan & Block Now" in section header
+📋 Previously blocked: 0 IPs
 
-### Database
-- **Tables**: blocked_threat, threat_action_log
-- **Indexes**: ip_address, user_id, created_at, timestamp
-- **Foreign Keys**: User references
+🔍 Fetching latest threats...
+✅ Received 30 threats
 
----
+🎯 Found 15 high-severity threats to block:
 
-## ✅ Verification Checklist
+1. Phishing             | 185.220.101.15  | Score: 92
+   ✅ Windows Firewall: Blocked 185.220.101.15
+   ✅ Kali VM: Blocked 185.220.101.15
+   ✅ Successfully blocked!
 
-- [x] Auto-block endpoint created in backend
-- [x] IP validation integrated
-- [x] Database blocking logic implemented
-- [x] Audit logging added
-- [x] Frontend auto-block function created
-- [x] Dashboard section for auto-blocked threats added
-- [x] Manual "Scan & Block Now" button added
-- [x] Risk score color coding implemented
-- [x] Admin alerts configured
-- [x] Console logging added for debugging
-- [x] Error handling implemented
-- [x] Duplicate prevention working
-- [x] Database migrations not needed (uses existing models)
+2. Ransomware           | 198.98.51.22    | Score: 98
+   ✅ Windows Firewall: Blocked 198.98.51.22
+   ✅ Kali VM: Blocked 198.98.51.22
+   ✅ Successfully blocked!
 
----
+...
 
-## 🎯 Next Steps
-
-1. **Test the system** with actual high-risk threat data
-2. **Monitor performance** of auto-block scans
-3. **Adjust threshold** if needed (currently 75)
-4. **Add unblock feature** to UI if desired
-5. **Create reports** of auto-blocked threats
-6. **Integrate webhooks** for external notifications
-7. **Add whitelist** for safe IPs that shouldn't be blocked
+======================================================================
+📊 AUTO-BLOCKING SUMMARY
+======================================================================
+✅ Successfully blocked: 15 IPs
+⏭️  Already blocked: 0 IPs
+❌ Failed: 0 IPs
+📋 Total tracked: 15 IPs
+======================================================================
+```
 
 ---
 
-## 📞 Support
+## 🔄 Continuous Monitoring Output
 
-For issues or questions about auto-blocking:
-1. Check console logs for "[AUTO-BLOCK]" messages
-2. Review database entries in BlockedThreat table
-3. Check ThreatActionLog for action history
-4. Verify admin permissions and JWT token validity
-5. Ensure threat cache file exists (recent_threats.json)
+```
+======================================================================
+🛡️  CONTINUOUS AUTO-BLOCKING SERVICE
+======================================================================
+⏱️  Check interval: 60 seconds
+🎯 Max blocks per cycle: 10
+======================================================================
+
+⚠️  Press Ctrl+C to stop
+
+──────────────────────────────────────────────────────────────────────
+🔄 CYCLE 1 - 2026-02-14 10:30:00
+──────────────────────────────────────────────────────────────────────
+📊 Currently tracking: 15 blocked IPs
+
+[Auto-blocking runs...]
+
+⏸️  Sleeping for 60 seconds...
+──────────────────────────────────────────────────────────────────────
+```
 
 ---
 
-**Version**: 1.0  
-**Last Updated**: January 28, 2026  
-**Status**: ✅ Production Ready
+## 🚨 Troubleshooting
+
+### "Access Denied" on Windows
+**Solution:** Run PowerShell as Administrator
+
+### "sshpass not found"
+**Solution:** Install sshpass or use manual Kali VM blocking method
+
+### Kali VM SSH fails
+**Solutions:**
+1. Verify VM is running: `ping 192.168.56.101`
+2. Test SSH: `ssh kali@192.168.56.101`
+3. Use manual script method (kali_blocker.sh)
+
+### No threats blocked
+**Possible reasons:**
+- No high-severity threats in current feed (score < 75)
+- All threats already blocked
+- Threats don't have valid IPs
+
+**Check:** Run `python inspect_threats.py` to see current threat scores
+
+---
+
+## 📋 Unblocking IPs
+
+### Single IP
+```bash
+python auto_block_high_threats.py --unblock 185.220.101.15
+```
+
+### All IPs (Reset)
+```bash
+# Windows: Remove all rules
+Get-NetFirewallRule -DisplayName "CTI_AutoBlock*" | Remove-NetFirewallRule
+
+# Kali: Flush iptables
+ssh kali@192.168.56.101 "sudo iptables -F INPUT; sudo iptables -F OUTPUT"
+
+# Clear tracking file
+rm auto_blocked_ips.json
+```
+
+---
+
+## ✅ Summary
+
+✅ **Automatic blocking** of high-severity threats  
+✅ **Dual protection** - Windows + Kali VM  
+✅ **No duplicates** - Smart tracking system  
+✅ **Real-time** - Continuous monitoring available  
+✅ **Easy unblock** - One command removal  
+✅ **API integrated** - Trigger from frontend  
+✅ **Firewall rules** - Persistent across reboots  
+
+Your system now automatically protects against high-severity threats! 🛡️🔥

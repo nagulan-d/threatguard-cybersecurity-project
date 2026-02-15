@@ -20,7 +20,7 @@ THREAT_TEMPLATES = [
     {"ip": "159.65.141.{}", "type": "Web Application Attack", "base_score": 73}
 ]
 
-CATEGORIES = ["Infrastructure", "Malware", "Phishing", "DDoS", "Ransomware", "Vulnerabilities"]
+CATEGORIES = ["Current Threats", "Malware", "Phishing", "DDoS Attacks", "Ransomware", "Vulnerability Exploits"]
 
 def generate_threats(count=20):
     threats = []

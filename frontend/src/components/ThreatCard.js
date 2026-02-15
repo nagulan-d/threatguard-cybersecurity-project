@@ -171,15 +171,18 @@ function ThreatCard({ threat = {}, users = [], token }) {
       </span>
 
       <h3>{threat.title || threat.indicator}</h3>
-      <p><b>Threat Category:</b> {threat.category || "Other"}</p>
-      <p><b>Risk Level:</b> {(threat.severity || (riskClass.charAt(0).toUpperCase() + riskClass.slice(1)))} ({displayScore})</p>
-      <p><b>Indicator:</b> {threat.indicator}</p>
-      <p><b>IP Address:</b> {ipList.length ? ipList.join(', ') : 'N/A'}</p>
-      <p><b>Type:</b> {threat.type}</p>
-      <p><b>Summary:</b> {threat.summary}</p>
-      <p><b>Score:</b> {threat.score}</p>
-      <p><b>Detected:</b> {threat.timestamp}</p>
-      {threat.alert && <p style={{ color: "red" }}>High Risk</p>}
+      <p><b>Threat ID:</b> {threat.id || 'N/A'}</p>
+      <p><b>IP Address:</b> {ipList.length ? ipList.join(', ') : (threat.ip || 'N/A')}</p>
+      <p><b>Category:</b> {threat.category || "Other"}</p>
+      <p><b>Threat Score:</b> {displayScore}/100</p>
+      <p><b>Threat Level:</b> {(threat.severity || (riskClass.charAt(0).toUpperCase() + riskClass.slice(1)))}</p>
+      <p><b>Type:</b> {threat.type || 'N/A'}</p>
+      <p><b>Status:</b> <span style={{ 
+        color: threat.status === 'Active' ? '#dc3545' : threat.status === 'Monitoring' ? '#f0ad4e' : '#28a745',
+        fontWeight: 600
+      }}>{threat.status || 'Unknown'}</span></p>
+      <p><b>Detection Time:</b> {threat.detection_time ? new Date(threat.detection_time).toLocaleString() : (threat.timestamp || 'N/A')}</p>
+      <p><b>Summary:</b> {threat.summary || 'No summary available'}</p>
 
       {users.length > 0 && (
         <div style={{ marginTop: "1rem" }}>

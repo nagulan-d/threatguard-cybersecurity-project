@@ -104,13 +104,14 @@ NOTIFY_THRESHOLD = int(os.getenv("NOTIFY_THRESHOLD", 80))
 THREATS_OUTPUT = os.getenv("THREATS_OUTPUT", "recent_threats.json")
 THREATS_POLL_INTERVAL = int(os.getenv("THREATS_POLL_INTERVAL", 120))  # Check every 2 minutes for notifications and auto-blocking
 THREATS_LIMIT = int(os.getenv("THREATS_LIMIT", 30))  # Increased default to get more fresh indicators
+THREATS_FETCH_INTERVAL = int(os.getenv("THREATS_FETCH_INTERVAL", THREATS_POLL_INTERVAL))  # Fetch from OTX every N seconds
 AGENT_API_TOKEN = os.getenv("AGENT_API_TOKEN")
 AGENT_REQUIRE_TOKEN = os.getenv("AGENT_REQUIRE_TOKEN", "true").lower() == "true"
 
 # Auto-blocking configuration
 AUTO_BLOCK_ENABLED = os.getenv("AUTO_BLOCK_ENABLED", "true").lower() == "true"
 AUTO_BLOCK_THRESHOLD = int(os.getenv("AUTO_BLOCK_THRESHOLD", 75))  # Block IPs with score >= 75 (High risk)
-AUTO_BLOCK_DELAY = int(os.getenv("AUTO_BLOCK_DELAY", 10))  # Delay between blocks in seconds
+AUTO_BLOCK_DELAY = int(os.getenv("AUTO_BLOCK_DELAY", 30))  # Delay between blocks in seconds
 AUTO_BLOCK_MAX_PER_CYCLE = int(os.getenv("AUTO_BLOCK_MAX_PER_CYCLE", 5))  # Max blocks per cycle
 
 db = SQLAlchemy(app)
@@ -121,15 +122,14 @@ init_summarizer(GEMINI_API_KEY)
 init_scorer(GEMINI_API_KEY)
 
 # ---------------- THREAT CATEGORIES ----------------
-# Primary categories requested by CTI Auto-Defense System
+# Primary categories requested by CTI Auto-Defense System (matches frontend dropdown)
 CATEGORY_LABELS = [
     "Phishing",
     "Ransomware",
     "Malware",
-    "DDoS",
-    "Vulnerabilities",
-    "Infrastructure",
-    "Web",
+    "DDoS Attacks",
+    "Vulnerability Exploits",
+    "Current Threats",
     "Other",
 ]
 
@@ -138,10 +138,9 @@ CATEGORY_KEYWORDS = {
     "Phishing": ["phish", "phishing", "credential", "spoof", "malicious-email"],
     "Ransomware": ["ransom", "ransomware", "locker", "encryptor", "cerber", "locky"],
     "Malware": ["malware", "trojan", "virus", "worm", "botnet", "rootkit"],
-    "DDoS": ["ddos", "denial of service", "syn flood", "amplification"],
-    "Vulnerabilities": ["cve", "exploit", "rce", "xss", "sql injection", "vulnerab"],
-    "Infrastructure": ["ipv4", "ip", "dns", "domain", "tor", "proxy", "infrastructure"],
-    "Web": ["url", "web", "webshell", "http", "appsec"],
+    "DDoS Attacks": ["ddos", "denial of service", "syn flood", "amplification", "dos"],
+    "Vulnerability Exploits": ["cve", "exploit", "rce", "xss", "sql injection", "vulnerab", "0day", "zero-day"],
+    "Current Threats": ["ipv4", "ip", "dns", "domain", "tor", "proxy", "infrastructure", "recent", "active"],
 }
 
 
@@ -176,10 +175,10 @@ def categorize_indicator(indicator: Any, summary: str = "") -> str:
                 return cat
 
     # Fallbacks based on indicator type when tags/keywords are absent
-    if ind_type in ("url", "uri", "domain"):
-        return "Web"
-    if ind_type in ("ipv4", "ip", "hostname", "dns"):
-        return "Infrastructure"
+    if ind_type in ("url", "uri"):
+        return "Malware"
+    if ind_type in ("ipv4", "ip", "hostname", "dns", "domain"):
+        return "Current Threats"
 
     return "Other"
 
@@ -378,6 +377,38 @@ class Notification(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     is_read = db.Column(db.Boolean, default=False)
 
+# Add ThreatIndicator model for tracking processed threats (prevents duplicates)
+class ThreatIndicator(db.Model):
+    """Track processed threat indicators to prevent duplicates."""
+    id = db.Column(db.Integer, primary_key=True)
+    indicator_value = db.Column(db.String(500), unique=True, nullable=False, index=True)
+    indicator_type = db.Column(db.String(50), nullable=False)  # 'ip', 'domain', 'hash', 'url', etc.
+    category = db.Column(db.String(50), nullable=False)  # 'Phishing', 'Ransomware', etc.
+    severity = db.Column(db.String(20), nullable=False)  # 'Low', 'Medium', 'High'
+    score = db.Column(db.Float, default=0.0)  # 0-100 risk score
+    summary = db.Column(db.String(500), default='')
+    pulse_count = db.Column(db.Integer, default=0)
+    reputation = db.Column(db.Float, default=0.0)  # 0-1.0
+    last_activity = db.Column(db.DateTime)
+    first_seen = db.Column(db.DateTime, default=datetime.utcnow)
+    last_seen = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
+    otx_id = db.Column(db.String(100), unique=True)  # AlienVault OTX ID for dedup
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'indicator': self.indicator_value,
+            'type': self.indicator_type,
+            'category': self.category,
+            'severity': self.severity,
+            'score': self.score,
+            'summary': self.summary,
+            'pulse_count': self.pulse_count,
+            'reputation': self.reputation,
+            'first_seen': self.first_seen.isoformat(),
+            'last_seen': self.last_seen.isoformat(),
+        }
+
 # Add ThreatSubscription model for email notifications
 class ThreatSubscription(db.Model):
     """Track users subscribed to threat email notifications."""
@@ -465,6 +496,31 @@ class Agent(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
+class AdminNotification(db.Model):
+    """Track notifications for admins (latest 10 per admin)."""
+    id = db.Column(db.Integer, primary_key=True)
+    admin_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    notification_type = db.Column(db.String(50), nullable=False)  # 'upgrade_request', 'feature_request', 'system_alert', 'user_action_block'
+    title = db.Column(db.String(200), nullable=False)
+    message = db.Column(db.String(500), nullable=False)
+    related_user_id = db.Column(db.Integer, db.ForeignKey('user.id'))  # The user who triggered the notification
+    is_read = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    
+    admin = db.relationship('User', foreign_keys=[admin_id], backref='admin_notifications')
+    related_user = db.relationship('User', foreign_keys=[related_user_id])
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'notification_type': self.notification_type,
+            'title': self.title,
+            'message': self.message,
+            'is_read': self.is_read,
+            'created_at': self.created_at.isoformat(),
+        }
+
+
 class AgentEnforcement(db.Model):
     """Track enforcement results reported by agents."""
     id = db.Column(db.Integer, primary_key=True)
@@ -472,6 +528,36 @@ class AgentEnforcement(db.Model):
     ip_address = db.Column(db.String(45), nullable=False, index=True)
     status = db.Column(db.String(30), nullable=False)
     message = db.Column(db.String(255), default="")
+
+
+class DisplayedThreat(db.Model):
+    """Track threats displayed on admin dashboard to ensure uniqueness across refreshes."""
+    id = db.Column(db.Integer, primary_key=True)
+    threat_id = db.Column(db.String(100), unique=True, nullable=False, index=True)
+    ip_address = db.Column(db.String(45), nullable=False, index=True)
+    category = db.Column(db.String(50), nullable=False)
+    threat_type = db.Column(db.String(100), nullable=False)
+    severity = db.Column(db.String(20), nullable=False)
+    score = db.Column(db.Float, nullable=False)
+    status = db.Column(db.String(50), default='Active')
+    detection_time = db.Column(db.DateTime, nullable=False)
+    displayed_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    session_id = db.Column(db.String(50), index=True)  # Track by session for batch clearing
+    
+    def to_dict(self):
+        return {
+            'id': self.threat_id,
+            'indicator': self.ip_address,
+            'ip': self.ip_address,
+            'category': self.category,
+            'type': self.threat_type,
+            'severity': self.severity,
+            'score': self.score,
+            'threat_level': self.severity,
+            'status': self.status,
+            'detection_time': self.detection_time.isoformat() + 'Z' if self.detection_time else None,
+            'displayed_at': self.displayed_at.isoformat() + 'Z',
+        }
     reported_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
 
 # Store block tokens temporarily (in production, use Redis or database)
@@ -834,71 +920,246 @@ def get_all_websites(current_user):
     return jsonify(websites_data), 200
 
 # --- Threat Intelligence Endpoint --- (Updated: Live refresh support)
-# Global tracking for uniqueness across refresh requests
-SHOWN_IPS_REFRESH = set()
-# Track indicators shown on refresh to avoid repeats across requests
-SHOWN_INDICATORS_REFRESH = set()
-
-
 @app.route("/api/threats", methods=["GET"])
 def get_threats():
-    """Fast version - returns balanced, randomized cached threats instantly."""
-    print("\n[API] /api/threats called")
+    """
+    SYNTHETIC VERSION - Generates fresh unique threats on every request.
+    - Clears all previous displayed threats
+    - Generates 15 new threats with unique IPs
+    - Balanced distribution: 5 High, 5 Medium, 5 Low
+    - Equal category distribution
+    - No duplicates across refreshes
+    """
+    print("\n" + "="*80)
+    print("[API] /api/threats called - SYNTHETIC GENERATION MODE")
+    print("="*80)
     
     try:
         limit = int(request.args.get("limit", 15))
     except Exception:
         limit = 15
     
-    # Load cached threats
+    # Admin dashboard always uses exactly 15 threats
+    is_admin_request = request.args.get("admin", "false").lower() == "true"
+    if is_admin_request:
+        limit = 15
+    
+    # Get category filter (optional)
+    category_filter = request.args.get("category")
+    if category_filter == "All":
+        category_filter = None
+    
     try:
-        with open(THREATS_OUTPUT, "r", encoding="utf-8") as f:
-            all_threats = json.load(f)
+        import uuid
+        from threat_generator import generate_fresh_threats, get_registry_stats
         
-        # Apply category filter if requested
-        category = request.args.get("category")
-        if category and category != "All":
-            all_threats = [t for t in all_threats if t.get("category") == category]
+        # STEP 1: Clear ALL previous displayed threats
+        print(f"[STEP 1] Clearing all previous displayed threats...")
+        deleted_count = db.session.query(DisplayedThreat).delete()
+        db.session.commit()
+        print(f"[STEP 1] ✅ Cleared {deleted_count} old threats from database")
         
-        # Ensure severity field matches score (critical fix)
-        for threat in all_threats:
-            score = threat.get("score", 0)
-            if score >= 75:
-                threat["severity"] = "High"
-            elif score >= 50:
-                threat["severity"] = "Medium"
-            else:
-                threat["severity"] = "Low"
+        # STEP 2: Get all previously used IPs from database to ensure absolute uniqueness
+        all_blocked_ips = set(
+            ip[0] for ip in db.session.query(BlockedThreat.ip_address).distinct().all()
+        )
+        print(f"[STEP 2] Found {len(all_blocked_ips)} blocked IPs to exclude")
         
-        # Separate threats by risk level for balanced distribution
-        high_threats = [t for t in all_threats if t.get("score", 0) >= 75]
-        medium_threats = [t for t in all_threats if 50 <= t.get("score", 0) < 75]
-        low_threats = [t for t in all_threats if t.get("score", 0) < 50]
+        # STEP 3: Generate fresh synthetic threats
+        print(f"[STEP 3] Generating {limit} fresh synthetic threats...")
+        session_id = str(uuid.uuid4())[:8]
         
-        # Randomize each category
-        random.shuffle(high_threats)
-        random.shuffle(medium_threats)
-        random.shuffle(low_threats)
+        fresh_threats = generate_fresh_threats(count=limit, excluded_ips=all_blocked_ips)
         
-        # Calculate balanced distribution (equal parts of each risk level)
-        per_category = limit // 3
-        remainder = limit % 3
+        # STEP 4: Filter by category if requested
+        if category_filter:
+            fresh_threats = [t for t in fresh_threats if t.get("category") == category_filter]
+            print(f"[STEP 4] Filtered to {len(fresh_threats)} threats in category '{category_filter}'")
         
-        # Take equal amounts from each category, with remainder going to high
-        selected_threats = []
-        selected_threats.extend(high_threats[:per_category + remainder])
-        selected_threats.extend(medium_threats[:per_category])
-        selected_threats.extend(low_threats[:per_category])
+        # STEP 5: Store in database for tracking
+        print(f"[STEP 5] Storing {len(fresh_threats)} threats in database...")
+        for threat_data in fresh_threats:
+            displayed_threat = DisplayedThreat(
+                threat_id=threat_data['id'],
+                ip_address=threat_data['ip'],
+                category=threat_data['category'],
+                threat_type=threat_data['type'],
+                severity=threat_data['severity'],
+                score=threat_data['score'],
+                status=threat_data['status'],
+                detection_time=datetime.fromisoformat(threat_data['detection_time'].replace('Z', '')),
+                session_id=session_id
+            )
+            db.session.add(displayed_threat)
         
-        # Randomize final order so they're not grouped by risk level
-        random.shuffle(selected_threats)
+        db.session.commit()
+        print(f"[STEP 5] ✅ Stored {len(fresh_threats)} threats in database")
         
-        print(f"[OK] Returning {len(selected_threats)} balanced threats (High: {len([t for t in selected_threats if t.get('score', 0) >= 75])}, Medium: {len([t for t in selected_threats if 50 <= t.get('score', 0) < 75])}, Low: {len([t for t in selected_threats if t.get('score', 0) < 50])})")
-        return jsonify(selected_threats)
+        # STEP 6: Verify distribution
+        high_count = len([t for t in fresh_threats if t['severity'] == 'High'])
+        medium_count = len([t for t in fresh_threats if t['severity'] == 'Medium'])
+        low_count = len([t for t in fresh_threats if t['severity'] == 'Low'])
+        
+        print("\n" + "-"*80)
+        print(f"[DISTRIBUTION SUMMARY]")
+        print(f"  Total Threats: {len(fresh_threats)}")
+        print(f"  High Severity: {high_count} (score ≥ 75)")
+        print(f"  Medium Severity: {medium_count} (score 51-74)")
+        print(f"  Low Severity: {low_count} (score < 50)")
+        print(f"  Session ID: {session_id}")
+        print(f"  Sample IPs: {[t['ip'] for t in fresh_threats[:3]]}")
+        
+        # Get registry stats
+        stats = get_registry_stats()
+        print(f"  Total Unique IPs Generated (All Time): {stats['total_unique_ips']}")
+        print("-"*80 + "\n")
+        
+        # STEP 7: Return threats with no-cache headers
+        response = jsonify(fresh_threats)
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        
+        print(f"[SUCCESS] ✅ Returning {len(fresh_threats)} fresh synthetic threats")
+        print("="*80 + "\n")
+        
+        return response
         
     except Exception as e:
-        print(f"[ERROR] Error: {e}")
-        return jsonify([])
+        print(f"[ERROR] ❌ Failed to generate synthetic threats: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "error": "Failed to generate threats",
+            "message": str(e)
+        }), 500
+
+
+@app.route("/api/reset-shown-threats", methods=["POST"])
+def reset_shown_threats():
+    """
+    Clear all displayed threats and optionally reset the IP registry.
+    This forces a complete fresh start on the next request.
+    """
+    try:
+        # Clear displayed threats from database
+        deleted_count = db.session.query(DisplayedThreat).delete()
+        db.session.commit()
+        
+        # Optionally clear the IP registry (use with caution)
+        reset_registry = request.json.get("reset_registry", False) if request.json else False
+        
+        if reset_registry:
+            from threat_generator import clear_ip_registry
+            clear_ip_registry()
+            print(f"[API] ⚠️ Cleared IP registry - all IPs can be reused")
+        
+        print(f"[API] ✅ Reset complete - cleared {deleted_count} displayed threats")
+        
+        return jsonify({
+            "success": True,
+            "message": f"Cleared {deleted_count} displayed threats",
+            "registry_reset": reset_registry
+        })
+    except Exception as e:
+        print(f"[ERROR] Failed to reset shown threats: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/threat-stats", methods=["GET"])
+def get_threat_stats():
+    """Get statistics about the threat generation system."""
+    try:
+        from threat_generator import get_registry_stats
+        
+        # Get database stats
+        total_displayed = db.session.query(DisplayedThreat).count()
+        total_blocked = db.session.query(BlockedThreat).filter_by(is_active=True).count()
+        
+        # Get registry stats
+        registry_stats = get_registry_stats()
+        
+        stats = {
+            "displayed_threats_count": total_displayed,
+            "blocked_threats_count": total_blocked,
+            "unique_ips_generated": registry_stats["total_unique_ips"],
+            "generation_sessions": registry_stats["session_counter"],
+            "sample_ips": registry_stats["sample_ips"]
+        }
+        
+        return jsonify(stats)
+    except Exception as e:
+        print(f"[ERROR] Failed to get threat stats: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/auto-block-high-threats", methods=["POST"])
+def trigger_auto_block():
+    """Trigger automatic blocking of high-severity threats in firewall and VM."""
+    print("\n[API] Auto-block triggered by user")
+    
+    try:
+        import subprocess
+        import threading
+        
+        def run_auto_block():
+            """Run auto-blocker in background."""
+            try:
+                result = subprocess.run(
+                    ["python", "auto_block_high_threats.py"],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    cwd=os.path.dirname(os.path.abspath(__file__))
+                )
+                print(f"[AUTO-BLOCK] Completed with exit code {result.returncode}")
+                if result.stdout:
+                    print(f"[AUTO-BLOCK] Output:\n{result.stdout}")
+                if result.stderr:
+                    print(f"[AUTO-BLOCK] Errors:\n{result.stderr}")
+            except Exception as e:
+                print(f"[AUTO-BLOCK] Error: {e}")
+        
+        # Run in background thread
+        thread = threading.Thread(target=run_auto_block, daemon=True)
+        thread.start()
+        
+        return jsonify({
+            "success": True,
+            "message": "Auto-blocking started. Check console for progress."
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to start auto-block: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/blocked-ips", methods=["GET"])
+def get_blocked_ips():
+    """Get list of auto-blocked IPs."""
+    try:
+        import json
+        blocked_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auto_blocked_ips.json")
+        
+        if os.path.exists(blocked_file):
+            with open(blocked_file, 'r') as f:
+                data = json.load(f)
+            return jsonify({
+                "success": True,
+                "blocked_ips": data.get('blocked_ips', []),
+                "count": len(data.get('blocked_ips', [])),
+                "last_updated": data.get('last_updated', 'N/A')
+            })
+        else:
+            return jsonify({
+                "success": True,
+                "blocked_ips": [],
+                "count": 0,
+                "last_updated": None
+            })
+    except Exception as e:
+        print(f"[ERROR] Failed to get blocked IPs: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 def _extract_ip_from_threat(threat):
@@ -2059,31 +2320,29 @@ def admin_block_threat(current_user):
     }), 201
 
 
-# --- AUTO-BLOCK HIGH-RISK THREATS (Admin Dashboard) ---
+# --- AUTO-BLOCK HIGH-RISK THREATS (Admin Dashboard) - ONE BY ONE ---
 @app.route("/api/admin/auto-block-threats", methods=["POST"])
 @token_required
 def admin_auto_block_threats(current_user):
     """
-    Automatically block all high-risk threats (score >= 75) that are IPs.
-    Called when admin dashboard loads.
+    Automatically block high-risk threats (score >= 75) ONE BY ONE with delay.
+    Only blocks threats currently shown on admin dashboard.
     Returns list of auto-blocked IPs and summary.
     """
     if current_user.role != "admin":
         return jsonify({"error": "Unauthorized - Admin access required"}), 403
     
     try:
-        print("\n[BLOCK] Starting automatic threat blocking system...")
+        print("\n[BLOCK] 🛡️  Starting ONE-BY-ONE automatic threat blocking...")
         
-        # Load threats from cache
-        threats = []
-        try:
-            with open(THREATS_OUTPUT, "r", encoding="utf-8") as f:
-                threats = json.load(f)
-            print(f"[OK] [AUTO-BLOCK] Loaded {len(threats)} threats from cache")
-        except FileNotFoundError:
-            print("[ERROR] [AUTO-BLOCK] Cache file not found")
+        # Get the list of threats to block from request body
+        data = request.get_json() or {}
+        threats_to_block = data.get("threats", [])
+        
+        # If no threats provided, do not fall back to cache
+        if not threats_to_block:
             return jsonify({
-                "message": "No threat cache available",
+                "message": "No threats provided for auto-blocking",
                 "auto_blocked": [],
                 "skipped": [],
                 "summary": {
@@ -2094,20 +2353,22 @@ def admin_auto_block_threats(current_user):
                     "invalid_ips": 0
                 }
             }), 200
-        except Exception as e:
-            print(f"[ERROR] [BLOCK] Error reading cache: {e}")
-            return jsonify({"error": f"Failed to read threat cache: {e}"}), 500
         
-        # Filter high-risk threats (score >= 75)
-        high_risk = [t for t in threats if t.get("score", 0) >= 75]
-        print(f"📊 [AUTO-BLOCK] Found {len(high_risk)} high-risk threats (score >= 75)")
+        print(f"📊 [AUTO-BLOCK] Processing {len(threats_to_block)} threats for auto-blocking")
         
         auto_blocked = []
         already_blocked = []
         invalid_ips = []
         skipped_count = 0
         
-        for threat in high_risk:
+        # Process threats ONE BY ONE with delay
+        import time
+        block_delay = float(os.getenv("AUTO_BLOCK_DELAY", "10"))  # seconds between blocks
+        max_blocks = int(os.getenv("AUTO_BLOCK_MAX_PER_CYCLE", "5"))  # max blocks per cycle
+        
+        blocked_this_cycle = 0
+        
+        for idx, threat in enumerate(threats_to_block):
             try:
                 # Extract IP address
                 ip_address = threat.get("ip") or threat.get("ip_address") or threat.get("indicator")
@@ -2161,6 +2422,7 @@ def admin_auto_block_threats(current_user):
                     is_active=True
                 )
                 db.session.add(blocked_threat)
+                db.session.flush()  # Get the ID
                 
                 # Log the auto-block action
                 action_log = ThreatActionLog(
@@ -2186,7 +2448,7 @@ def admin_auto_block_threats(current_user):
                 # Actually block the IP globally
                 try:
                     success, message = ip_blocker.block_ip(ip_address, f"admin_auto_block_{current_user.id}")
-                    print(f"[OK] [BLOCK] Blocked IP {ip_address} (success={success})")
+                    print(f"✅ [BLOCK] Blocked IP {ip_address} globally (success={success})")
                 except Exception as e:
                     print(f"[WARN] [BLOCK] Failed to call ip_blocker: {e}")
                 
@@ -2200,8 +2462,12 @@ def admin_auto_block_threats(current_user):
                     "blocked_at": blocked_threat.blocked_at.isoformat()
                 })
                 
-                # BLOCK ONLY ONE IP PER CALL (one-by-one auto-blocking)
-                break
+                blocked_this_cycle += 1
+                
+                # Delay before next block (one-by-one blocking)
+                if blocked_this_cycle < max_blocks and (idx + 1) < len(threats_to_block):
+                    print(f"⏳ Waiting {block_delay}s before next block...")
+                    time.sleep(block_delay)
                 
             except Exception as e:
                 print(f"[ERROR] [BLOCK] Error processing threat: {str(e)}")
@@ -2212,12 +2478,15 @@ def admin_auto_block_threats(current_user):
                 continue
         
         summary = {
-            "total_threats_in_feed": len(threats),
-            "high_risk_threats": len(high_risk),
+            "total_threats_processed": len(threats_to_block),
+            "high_risk_threats": len([t for t in threats_to_block if t.get("score", 0) >= 75]),
             "successfully_auto_blocked": len(auto_blocked),
             "already_blocked": len(already_blocked),
             "invalid_ips": len(invalid_ips),
-            "skipped": skipped_count
+            "skipped": skipped_count,
+            "blocked_this_cycle": blocked_this_cycle,
+            "max_per_cycle": max_blocks,
+            "block_delay_seconds": block_delay
         }
         
         # Remove blocked IPs from cache permanently
@@ -2225,18 +2494,19 @@ def admin_auto_block_threats(current_user):
             _remove_ips_from_cache([b["ip"] for b in auto_blocked])
         
         print(f"""
-🎯 [AUTO-BLOCK] SUMMARY
+🎯 [AUTO-BLOCK] SUMMARY (ONE-BY-ONE BLOCKING)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Total threats in feed: {summary['total_threats_in_feed']}
+  Total threats processed: {summary['total_threats_processed']}
   High-risk threats: {summary['high_risk_threats']}
-  [OK] Successfully auto-blocked: {summary['successfully_auto_blocked']}
+  ✅ Blocked this cycle: {summary['blocked_this_cycle']} / {summary['max_per_cycle']}
   ⚠️  Already blocked: {summary['already_blocked']}
   ❌ Invalid IPs: {summary['invalid_ips']}
   ⊘ Skipped: {summary['skipped']}
+  ⏱️  Block delay: {summary['block_delay_seconds']}s
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━""")
         
         return jsonify({
-            "message": f"Auto-blocked {len(auto_blocked)} high-risk threats",
+            "message": f"Auto-blocked {len(auto_blocked)} high-risk threat(s) this cycle",
             "auto_blocked": auto_blocked,
             "already_blocked": already_blocked,
             "invalid_ips": invalid_ips,
@@ -2252,43 +2522,8 @@ def admin_auto_block_threats(current_user):
 
 
 def _remove_ips_from_cache(ip_addresses: list) -> None:
-    """
-    Permanently remove blocked IPs from the threat cache.
-    This prevents them from reappearing in auto-block scans.
-    """
-    try:
-        # Load current cache
-        with open(THREATS_OUTPUT, "r", encoding="utf-8") as f:
-            threats = json.load(f)
-        
-        original_count = len(threats)
-        
-        # Filter out threats with blocked IPs
-        filtered_threats = []
-        removed_count = 0
-        
-        for threat in threats:
-            threat_ip = threat.get("ip") or threat.get("ip_address") or threat.get("indicator")
-            if threat_ip in ip_addresses:
-                removed_count += 1
-                print(f"[CACHE-CLEANUP] Removing {threat_ip} from cache")
-            else:
-                filtered_threats.append(threat)
-        
-        # Write back updated cache
-        if removed_count > 0:
-            with open(THREATS_OUTPUT, "w", encoding="utf-8") as f:
-                json.dump(filtered_threats, f, indent=2)
-            print(f"[OK] [CACHE-CLEANUP] Removed {removed_count} IPs from cache ({original_count} → {len(filtered_threats)})")
-        else:
-            print(f"[CACHE-CLEANUP] No IPs removed from cache")
-            
-    except FileNotFoundError:
-        print(f"[CACHE-CLEANUP] Cache file not found: {THREATS_OUTPUT}")
-    except Exception as e:
-        print(f"[CACHE-CLEANUP] Error removing IPs from cache: {e}")
-        import traceback
-        traceback.print_exc()
+    """No-op: cache is not used for live threat feeds."""
+    return None
 
 
 # --- Admin: Deactivate All Auto-Blocked Threats ---
@@ -2730,7 +2965,7 @@ def admin_get_action_logs(current_user):
 # ================ END THREAT NOTIFICATION & BLOCKING API ================
 
 def fetch_and_cache(limit=None, modified_since=None):
-    """Fetch from OTX export endpoint and write normalized JSON to THREATS_OUTPUT."""
+    """Fetch from OTX export endpoint with database-level duplicate prevention and write normalized JSON to THREATS_OUTPUT."""
     headers = {"X-OTX-API-KEY": API_KEY} if API_KEY else {}
     if limit is None:
         try:
@@ -2774,28 +3009,126 @@ def fetch_and_cache(limit=None, modified_since=None):
     else:
         indicators = []
 
+    # ENHANCED DUPLICATE PREVENTION: Check database for existing threats
+    print(f"[FETCH] Processing {len(indicators)} indicators from OTX...")
+    
+    # Extract all indicator values and OTX IDs for batch lookup
+    indicator_values_set = set()
+    otx_ids_set = set()
+    for i in indicators:
+        ind_val = (
+            i.get("indicator") or 
+            i.get("value") or 
+            i.get("hostname") or 
+            i.get("domain") or 
+            i.get("ip") or 
+            str(i.get("id", ""))
+        )
+        if ind_val:
+            indicator_values_set.add(ind_val)
+        
+        otx_id = str(i.get("id", "")) if i.get("id") else None
+        if otx_id:
+            otx_ids_set.add(otx_id)
+    
+    # Batch query database for existing threats
+    existing_by_value = {}
+    existing_by_otx = {}
+    try:
+        if indicator_values_set:
+            existing_threats = ThreatIndicator.query.filter(
+                ThreatIndicator.indicator_value.in_(list(indicator_values_set))
+            ).all()
+            for threat in existing_threats:
+                existing_by_value[threat.indicator_value] = threat
+        
+        if otx_ids_set:
+            existing_by_otx_query = ThreatIndicator.query.filter(
+                ThreatIndicator.otx_id.in_(list(otx_ids_set))
+            ).all()
+            for threat in existing_by_otx_query:
+                if threat.otx_id:
+                    existing_by_otx[threat.otx_id] = threat
+        
+        print(f"[DEDUP] Found {len(existing_by_value)} existing threats by indicator value")
+        print(f"[DEDUP] Found {len(existing_by_otx)} existing threats by OTX ID")
+    except Exception as e:
+        print(f"[WARN] Could not query database for duplicates: {e}")
+        existing_by_value = {}
+        existing_by_otx = {}
+
     threats = []
     seen = set()
     skipped = 0
+    duplicates_in_db = 0
+    updated_in_db = 0
     allowed_types = {"ipv4", "ip", "hostname", "dns", "domain", "url", "uri", "md5", "sha1", "sha256"}
 
     for i in indicators:
         normalized = normalize_indicator(i, pulse_title="")
         ind_val = normalized.get("indicator")
         ind_type = (normalized.get("type") or "").lower()
+        otx_id = normalized.get("otx_id")
+        
         if ind_type not in allowed_types:
             skipped += 1
             continue
+        
+        # Skip duplicates within this fetch
         if ind_val in seen:
             continue
         seen.add(ind_val)
+        
+        # Check if exists in database
+        existing_threat = existing_by_value.get(ind_val) or (existing_by_otx.get(otx_id) if otx_id else None)
+        
+        if existing_threat:
+            # Update existing threat with fresh data
+            try:
+                existing_threat.last_seen = datetime.utcnow()
+                existing_threat.pulse_count = normalized.get("pulse_count", existing_threat.pulse_count)
+                existing_threat.score = normalized.get("score", existing_threat.score)
+                existing_threat.severity = normalized.get("severity", existing_threat.severity)
+                existing_threat.reputation = normalized.get("reputation", existing_threat.reputation)
+                existing_threat.summary = normalized.get("summary", existing_threat.summary)
+                db.session.add(existing_threat)
+                updated_in_db += 1
+            except Exception as e:
+                print(f"[WARN] Could not update existing threat {ind_val}: {e}")
+            
+            duplicates_in_db += 1
+        else:
+            # New threat - will be added to database later if needed
+            pass
+        
         # Attach convenience IP if available
         ip_address = extract_ip_from_indicator(i)
         if ip_address:
             normalized.update({"ip": ip_address})
+        
         threats.append(normalized)
+        
         if len(threats) >= limit:
             break
+    
+    # Commit database updates
+    if updated_in_db > 0:
+        try:
+            db.session.commit()
+            print(f"[DEDUP] Updated {updated_in_db} existing threats in database")
+        except Exception as e:
+            db.session.rollback()
+            print(f"[ERROR] Failed to update threats in database: {e}")
+
+    print(f"[DEDUP] Summary: {len(threats)} threats (including {duplicates_in_db} duplicates updated), {skipped} skipped by type")
+
+    # Mark all existing threats as from OTX
+    for threat in threats:
+        if "source" not in threat:
+            threat["source"] = "otx"
+
+    total_high = len([t for t in threats if t.get("score", 0) >= 75])
+    print(f"[FETCH] High-Severity Summary: {total_high} real OTX threats")
 
     try:
         with open(THREATS_OUTPUT, "w", encoding="utf-8") as f:
@@ -3150,6 +3483,7 @@ def _background_updater():
         print(f"[BACKGROUND]   - Max blocks per cycle: {AUTO_BLOCK_MAX_PER_CYCLE}")
     
     cycle = 0
+    _last_fetch_time = 0
     
     while True:
         try:
@@ -3169,25 +3503,27 @@ def _background_updater():
                         if user:
                             print(f"  - {user.username} ({user.email}) - min_risk_score: {sub.min_risk_score}")
                 
-                # Load threats from cache (faster and reliable)
+                # Fetch latest threats from OTX on interval (no cache fallback)
                 threats = None
-                try:
-                    with open(THREATS_OUTPUT, "r", encoding="utf-8") as f:
-                        threats = json.load(f)
-                    print(f"[BACKGROUND] Loaded {len(threats) if threats else 0} cached threats")
-                    
-                    if threats:
-                        # Count high-risk threats
-                        high_risk = [t for t in threats if t.get("score", 0) >= 75]
-                        ip_based = [t for t in high_risk if (t.get("ip") or t.get("ip_address") or t.get("indicator"))]
-                        print(f"[BACKGROUND] High-risk threats (score >= 75): {len(high_risk)}")
-                        print(f"[BACKGROUND] IP-based high-risk threats: {len(ip_based)}")
-                        
-                except FileNotFoundError:
-                    print(f"[BACKGROUND] Cache file not found: {THREATS_OUTPUT}")
-                    print(f"[BACKGROUND] Will try again in next cycle ({THREATS_POLL_INTERVAL}s)")
-                except Exception as e:
-                    print(f"[BACKGROUND] Error reading cache: {e}")
+                now_ts = time.time()
+                if now_ts - _last_fetch_time >= THREATS_FETCH_INTERVAL:
+                    print(f"[BACKGROUND] Fetching new threats from OTX...")
+                    try:
+                        from live_threat_fetcher import fetch_live_threats
+                        fetched = fetch_live_threats(limit=THREATS_LIMIT, category=None)
+                        _last_fetch_time = now_ts
+                        if fetched:
+                            threats = fetched
+                            print(f"[BACKGROUND] Fetched {len(threats)} threats from OTX")
+                    except Exception as e:
+                        print(f"[BACKGROUND] Live fetch failed: {e}")
+
+                if threats:
+                    # Count high-risk threats
+                    high_risk = [t for t in threats if t.get("score", 0) >= 75]
+                    ip_based = [t for t in high_risk if (t.get("ip") or t.get("ip_address") or t.get("indicator"))]
+                    print(f"[BACKGROUND] High-risk threats (score >= 75): {len(high_risk)}")
+                    print(f"[BACKGROUND] IP-based high-risk threats: {len(ip_based)}")
                 
                 # Send notifications if we have threats
                 if threats and len(threats) > 0:
@@ -3215,6 +3551,320 @@ def _background_updater():
         print(f"{'='*60}\n")
         time.sleep(THREATS_POLL_INTERVAL)
 
+
+# ============================================================================
+# ENHANCED SYNCHRONIZED IP BLOCKING ENDPOINTS (Production-Level)
+# ============================================================================
+
+# Import sync manager
+try:
+    from blocking_sync_manager import sync_manager
+    SYNC_MANAGER_AVAILABLE = True
+except ImportError:
+    SYNC_MANAGER_AVAILABLE = False
+    print("[WARN] Blocking sync manager not available - using basic blocking")
+
+
+@app.route("/api/admin/block-threat-auto", methods=["POST"])
+@token_required
+def admin_block_threat_auto(current_user):
+    """
+    Auto-blocking endpoint with full synchronization
+    Used by auto-block monitor for high-severity threats
+    """
+    if current_user.role != "admin":
+        return jsonify({"error": "Unauthorized - Admin access required"}), 403
+    
+    data = request.get_json()
+    ip_address = data.get("ip_address")
+    threat_type = data.get("threat_type", "Auto-detected threat")
+    risk_category = data.get("risk_category", "High")
+    risk_score = data.get("risk_score", 75)
+    summary = data.get("summary", "")
+    reason = data.get("reason", "Automatically blocked - High severity")
+    
+    if not ip_address:
+        return jsonify({"error": "ip_address is required"}), 400
+    
+    # Validate IP format
+    if not is_valid_ip(ip_address):
+        return jsonify({"error": "Invalid IP address format"}), 400
+    
+    # Check if already blocked
+    existing = BlockedThreat.query.filter_by(
+        ip_address=ip_address,
+        is_active=True,
+        blocked_by='admin'
+    ).first()
+    
+    if existing:
+        return jsonify({"error": "This IP is already blocked"}), 409
+    
+    # Use sync manager if available, otherwise fallback to basic blocking
+    if SYNC_MANAGER_AVAILABLE:
+        # Set database session for sync manager
+        sync_manager.set_db_session(db.session)
+        
+        # Prepare threat data
+        threat_data = {
+            "threat_type": threat_type,
+            "risk_category": risk_category,
+            "risk_score": risk_score,
+            "summary": summary,
+            "blocked_by_user_id": current_user.id,
+            "auto_block": True
+        }
+        
+        # Perform synchronized blocking
+        import asyncio
+        success, message, db_record = asyncio.run(
+            sync_manager.block_ip_synchronized(
+                ip_address=ip_address,
+                threat_data=threat_data,
+                user_id=current_user.id,
+                blocked_by='admin',
+                reason=reason
+            )
+        )
+        
+        if success:
+            print(f"[AUTO-BLOCK] ✅ Successfully blocked {ip_address} (Score: {risk_score})")
+            return jsonify({
+                "message": message,
+                "blocked_threat": {
+                    "id": db_record.id if db_record else None,
+                    "ip_address": ip_address,
+                    "risk_score": risk_score,
+                    "blocked_at": db_record.blocked_at.isoformat() if db_record else datetime.utcnow().isoformat()
+                }
+            }), 201
+        else:
+            print(f"[AUTO-BLOCK] ❌ Failed to block {ip_address}: {message}")
+            return jsonify({"error": message}), 500
+    
+    else:
+        # Fallback to basic blocking
+        blocked_threat = BlockedThreat(
+            user_id=current_user.id,
+            ip_address=ip_address,
+            threat_type=threat_type,
+            risk_category=risk_category,
+            risk_score=risk_score,
+            summary=summary,
+            blocked_by='admin',
+            blocked_by_user_id=current_user.id,
+            reason=reason,
+            is_active=True
+        )
+        db.session.add(blocked_threat)
+        db.session.commit()
+        
+        # Block via IP blocker
+        success, message = ip_blocker.block_ip(ip_address, reason)
+        
+        if success:
+            return jsonify({
+                "message": f"IP {ip_address} blocked successfully",
+                "blocked_threat": {
+                    "id": blocked_threat.id,
+                    "ip_address": ip_address,
+                    "blocked_at": blocked_threat.blocked_at.isoformat()
+                }
+            }), 201
+        else:
+            db.session.delete(blocked_threat)
+            db.session.commit()
+            return jsonify({"error": f"Firewall blocking failed: {message}"}), 500
+
+
+@app.route("/api/admin/block-threat-sync", methods=["POST"])
+@token_required
+def admin_block_threat_sync(current_user):
+    """
+    Manual blocking endpoint with full synchronization
+    Used by admin dashboard for manual blocks
+    Ensures consistency across host and VM
+    """
+    if current_user.role != "admin":
+        return jsonify({"error": "Unauthorized - Admin access required"}), 403
+    
+    data = request.get_json()
+    ip_address = data.get("ip_address")
+    user_id = data.get("user_id", current_user.id)
+    threat_type = data.get("threat_type", "Manual block")
+    risk_category = data.get("risk_category", "High")
+    risk_score = data.get("risk_score", 80)
+    summary = data.get("summary", "")
+    reason = data.get("reason", "Manually blocked by administrator")
+    
+    if not ip_address:
+        return jsonify({"error": "ip_address is required"}), 400
+    
+    # Validate IP format
+    if not is_valid_ip(ip_address):
+        return jsonify({"error": "Invalid IP address format"}), 400
+    
+    # Check if already blocked
+    existing = BlockedThreat.query.filter_by(
+        ip_address=ip_address,
+        is_active=True
+    ).first()
+    
+    if existing:
+        return jsonify({"error": "This IP is already blocked"}), 409
+    
+    # Use sync manager if available
+    if SYNC_MANAGER_AVAILABLE:
+        sync_manager.set_db_session(db.session)
+        
+        threat_data = {
+            "threat_type": threat_type,
+            "risk_category": risk_category,
+            "risk_score": risk_score,
+            "summary": summary,
+            "blocked_by_user_id": current_user.id,
+            "auto_block": False
+        }
+        
+        import asyncio
+        success, message, db_record = asyncio.run(
+            sync_manager.block_ip_synchronized(
+                ip_address=ip_address,
+                threat_data=threat_data,
+                user_id=user_id,
+                blocked_by='admin',
+                reason=reason
+            )
+        )
+        
+        if success:
+            print(f"[MANUAL-BLOCK] ✅ Admin {current_user.username} blocked {ip_address}")
+            return jsonify({
+                "message": message,
+                "blocked_threat": {
+                    "id": db_record.id if db_record else None,
+                    "ip_address": ip_address,
+                    "blocked_at": db_record.blocked_at.isoformat() if db_record else datetime.utcnow().isoformat()
+                }
+            }), 201
+        else:
+            print(f"[MANUAL-BLOCK] ❌ Failed: {message}")
+            return jsonify({"error": message}), 500
+    
+    else:
+        # Fallback to existing admin_block_threat logic
+        return admin_block_threat(current_user)
+
+
+@app.route("/api/admin/unblock-threat-sync/<int:threat_id>", methods=["POST"])
+@token_required
+def admin_unblock_threat_sync(current_user, threat_id):
+    """
+    Synchronized unblock endpoint
+    Ensures IP is unblocked on both host and VM
+    """
+    if current_user.role != "admin":
+        return jsonify({"error": "Unauthorized - Admin access required"}), 403
+    
+    threat = BlockedThreat.query.get(threat_id)
+    if not threat:
+        return jsonify({"error": "Threat not found"}), 404
+    
+    if not threat.is_active:
+        return jsonify({"error": "Threat is already unblocked"}), 400
+    
+    ip_address = threat.ip_address
+    
+    # Use sync manager if available
+    if SYNC_MANAGER_AVAILABLE:
+        sync_manager.set_db_session(db.session)
+        
+        import asyncio
+        success, message = asyncio.run(
+            sync_manager.unblock_ip_synchronized(
+                ip_address=ip_address,
+                user_id=current_user.id,
+                threat_id=threat_id
+            )
+        )
+        
+        if success:
+            print(f"[UNBLOCK] ✅ Admin {current_user.username} unblocked {ip_address}")
+            return jsonify({"message": message}), 200
+        else:
+            print(f"[UNBLOCK] ❌ Failed: {message}")
+            return jsonify({"error": message}), 500
+    
+    else:
+        # Fallback to basic unblock
+        threat.is_active = False
+        threat.unblocked_at = datetime.utcnow()
+        threat.unblocked_by_user_id = current_user.id
+        db.session.commit()
+        
+        ip_blocker.unblock_ip(ip_address)
+        
+        return jsonify({"message": f"IP {ip_address} unblocked successfully"}), 200
+
+
+@app.route("/api/admin/sync-status", methods=["GET"])
+@token_required
+def get_sync_status(current_user):
+    """
+    Get synchronization status
+    Shows pending and failed operations
+    """
+    if current_user.role != "admin":
+        return jsonify({"error": "Unauthorized - Admin access required"}), 403
+    
+    if SYNC_MANAGER_AVAILABLE:
+        status = sync_manager.get_sync_status()
+        return jsonify({
+            "sync_manager_available": True,
+            "status": status,
+            "timestamp": datetime.utcnow().isoformat()
+        }), 200
+    else:
+        return jsonify({
+            "sync_manager_available": False,
+            "message": "Sync manager not available - using basic blocking"
+        }), 200
+
+
+@app.route("/api/admin/vm-agents", methods=["GET"])
+@token_required
+def get_vm_agents_status(current_user):
+    """
+    Get status of connected VM agents
+    """
+    if current_user.role != "admin":
+        return jsonify({"error": "Unauthorized - Admin access required"}), 403
+    
+    try:
+        from websocket_server import ws_manager
+        
+        agents_status = []
+        for agent in ws_manager.vm_agents:
+            agents_status.append({
+                "connected": True,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+        
+        return jsonify({
+            "vm_agents_count": len(ws_manager.vm_agents),
+            "agents": agents_status,
+            "websocket_available": True
+        }), 200
+    
+    except ImportError:
+        return jsonify({
+            "vm_agents_count": 0,
+            "agents": [],
+            "websocket_available": False,
+            "message": "WebSocket server not running"
+        }), 200
+
+
 # ---------------- RUN ----------------
 if __name__ == "__main__":
     # Attach endpoint-specific limits if limiter is available
@@ -3239,45 +3889,8 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"(Info) Skipped applying rate limits: {e}")
     
-    # Populate threat cache on startup for fast dashboard loads (non-blocking)
-    print("[STARTUP] Attempting to populate threat cache (5s timeout)...")
-    
-    def populate_cache_async():
-        """Async cache population - doesn't block server startup. Only populates if cache is empty."""
-        import time
-        time.sleep(2)  # Give server time to start
-        try:
-            with app.app_context():
-                # Check if cache already has data
-                try:
-                    with open(THREATS_OUTPUT, "r", encoding="utf-8") as f:
-                        existing_cache = json.load(f)
-                    if len(existing_cache) > 0:
-                        print(f"[CACHE] Existing cache has {len(existing_cache)} threats - preserving")
-                        return  # Don't overwrite existing data
-                except FileNotFoundError:
-                    print("[CACHE] No cache file found - will create new one")
-                except Exception:
-                    print("[CACHE] Cache file exists but couldn't read - will try to populate")
-                
-                # Only fetch if cache is empty or missing
-                import requests
-                headers = {"X-OTX-API-KEY": API_KEY} if API_KEY else {}
-                params = {"limit": 30, "modified_since": "1h"}
-                try:
-                    resp = requests.get(API_EXPORT_URL, headers=headers, params=params, timeout=5)
-                    if resp.ok:
-                        threats = fetch_and_cache(limit=30, modified_since="1h")
-                        if threats:
-                            print(f"[CACHE] Startup cache populated with {len(threats)} threats")
-                    else:
-                        print(f"[CACHE] OTX returned {resp.status_code}, using empty cache")
-                except requests.exceptions.Timeout:
-                    print("[CACHE] OTX timeout during startup - cache remains empty")
-                except Exception as e:
-                    print(f"[CACHE] Startup cache failed: {e}")
-        except Exception as e:
-            print(f"[CACHE] WARNING: Async cache population error: {e}")
+    # Skip cache population to enforce live fetch only
+    print("[STARTUP] Cache population disabled (live fetch only)")
 
     # Start background updater only in main process (avoid duplicate with reloader)
     # Re-enabled: Background notifications and high-threat alerts now active
@@ -3290,12 +3903,17 @@ if __name__ == "__main__":
     print("[STARTUP] STARTING THREATGUARD BACKEND")
     print("="*60)
     
+    # Create database tables if they don't exist
+    with app.app_context():
+        try:
+            db.create_all()
+            print("[DB] ✅ Verified all database tables exist")
+        except Exception as e:
+            print(f"[DB] ⚠️ Table creation warning: {e}")
+    
     if run_main:
         import threading
-        # Start cache population in separate thread (non-blocking)
-        cache_thread = threading.Thread(target=populate_cache_async, daemon=True)
-        cache_thread.start()
-        print("[OK] Cache updater thread started")
+        # Cache population disabled
         
         # Start notification updater
         updater = threading.Thread(target=_background_updater, daemon=True)

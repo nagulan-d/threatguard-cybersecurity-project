@@ -27,6 +27,11 @@ class IPBlocker:
         self.os_type = self._detect_os_type()
         self.is_linux = self.os_type in ['linux', 'wsl']
         self.is_windows = self.os_type == 'windows'
+        self.kali_vm_enabled = os.getenv("KALI_VM_ENABLED", "false").lower() == "true"
+        self.kali_vm_ip = os.getenv("KALI_VM_IP")
+        self.kali_vm_user = os.getenv("KALI_VM_USER", "kali")
+        self.kali_vm_port = os.getenv("KALI_VM_PORT", "22")
+        self.kali_vm_key_path = os.getenv("KALI_VM_KEY_PATH")
         self.load_rules()
         logger.info(f"IP Blocker initialized. OS: {self.os_type}, Linux: {self.is_linux}, Windows: {self.is_windows}")
     
@@ -100,9 +105,17 @@ class IPBlocker:
         if self.is_windows:
             success, msg = self._block_ip_windows(ip)
             if success:
+                if self.kali_vm_enabled:
+                    remote_success, remote_msg = self._block_ip_kali_ssh(ip)
+                    if not remote_success:
+                        # Roll back Windows rule if Kali block fails
+                        self._unblock_ip_windows(ip)
+                        return False, f"Windows blocked but Kali VM block failed: {remote_msg}"
                 self.blocked_ips.append(ip)
                 self.save_rules()
                 logger.info(f"Blocked IP {ip} via Windows Firewall: {reason}")
+                if self.kali_vm_enabled:
+                    return True, f"IP {ip} blocked successfully via Windows Firewall and Kali VM"
                 return True, f"IP {ip} blocked successfully via Windows Firewall"
             else:
                 logger.error(f"Windows blocking failed for {ip}: {msg}")
@@ -132,12 +145,21 @@ class IPBlocker:
         
         # Try OS-specific unblocking
         if self.is_windows:
+            if self.kali_vm_enabled:
+                remote_success, remote_msg = self._unblock_ip_kali_ssh(ip)
+                if not remote_success:
+                    return False, f"Kali VM unblock failed: {remote_msg}"
             success, msg = self._unblock_ip_windows(ip)
             if success:
                 self.blocked_ips.remove(ip)
                 self.save_rules()
                 logger.info(f"Unblocked IP {ip} via Windows Firewall")
+                if self.kali_vm_enabled:
+                    return True, f"IP {ip} unblocked successfully on Windows and Kali VM"
                 return True, f"IP {ip} unblocked successfully"
+            if self.kali_vm_enabled:
+                # Best-effort rollback if Windows unblock fails
+                self._block_ip_kali_ssh(ip)
         
         elif self.is_linux:
             success, msg = self._unblock_ip_iptables(ip)
@@ -398,6 +420,59 @@ class IPBlocker:
             return True, "Rules flushed"
         except Exception as e:
             return False, str(e)
+
+    def _run_kali_ssh(self, command: str) -> Tuple[bool, str]:
+        """Run a command on the Kali VM over SSH (key-based auth required)."""
+        if not self.kali_vm_enabled:
+            return False, "Kali VM integration disabled"
+        if not self.kali_vm_ip:
+            return False, "KALI_VM_IP not set"
+        if not self.kali_vm_key_path or not os.path.exists(self.kali_vm_key_path):
+            return False, "KALI_VM_KEY_PATH not set or file not found (key-based SSH required)"
+
+        ssh_cmd = [
+            "ssh",
+            "-i", self.kali_vm_key_path,
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "ConnectTimeout=5",
+            "-p", str(self.kali_vm_port),
+            f"{self.kali_vm_user}@{self.kali_vm_ip}",
+            command,
+        ]
+
+        try:
+            result = subprocess.run(
+                ssh_cmd,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            stdout = (result.stdout or "").strip()
+            stderr = (result.stderr or "").strip()
+            if result.returncode != 0:
+                return False, stderr or stdout or "SSH command failed"
+            return True, stdout
+        except subprocess.TimeoutExpired:
+            return False, "SSH command timeout"
+        except Exception as e:
+            return False, str(e)
+
+    def _block_ip_kali_ssh(self, ip: str) -> Tuple[bool, str]:
+        """Block IP on Kali VM using iptables over SSH."""
+        cmd = (
+            f"sudo -n /usr/sbin/iptables -I INPUT -s {ip} -j DROP; "
+            f"sudo -n /usr/sbin/iptables -I OUTPUT -d {ip} -j DROP"
+        )
+        return self._run_kali_ssh(cmd)
+
+    def _unblock_ip_kali_ssh(self, ip: str) -> Tuple[bool, str]:
+        """Unblock IP on Kali VM using iptables over SSH."""
+        cmd = (
+            f"sudo -n /usr/sbin/iptables -D INPUT -s {ip} -j DROP; "
+            f"sudo -n /usr/sbin/iptables -D OUTPUT -d {ip} -j DROP"
+        )
+        return self._run_kali_ssh(cmd)
 
 
 # Global IP blocker instance

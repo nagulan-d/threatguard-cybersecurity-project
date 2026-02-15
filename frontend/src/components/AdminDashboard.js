@@ -123,11 +123,10 @@ function AdminDashboard({ logout }) {
 
   const token = getToken();
 
-  // Fetch core admin data in parallel
-  useEffect(() => {
-    const fetchAdminData = async () => {
-      const currentToken = getToken();
-      const rawToken = normalizeToken(currentToken);
+  // Fetch core admin data in parallel - moved outside useEffect so other functions can call it
+  const fetchAdminData = async () => {
+    const currentToken = getToken();
+    const rawToken = normalizeToken(currentToken);
 
       if (!rawToken) {
         console.error("❌ No token found in localStorage");
@@ -240,11 +239,13 @@ function AdminDashboard({ logout }) {
             console.warn("Failed to call logout():", e);
           }
         }
-      } finally {
-        setLoading(false);
-      }
-    };
+    } finally {
+      setLoading(false);
+    }
+  };
 
+  // useEffect to call fetchAdminData on mount and set up auto-refresh
+  useEffect(() => {
     fetchAdminData();
     
     // Auto-refresh admin data every 30 seconds for fresh threat/user/website updates
@@ -256,6 +257,7 @@ function AdminDashboard({ logout }) {
   // Fetch live threats (refresh=true) on every request; bypass cache entirely.
   const fetchThreats = async (opts = {}) => {
     setThreatsLoading(true);
+    setThreats([]);
     const currentToken = getToken();
     const rawToken = normalizeToken(currentToken);
     if (!rawToken) {
@@ -266,11 +268,13 @@ function AdminDashboard({ logout }) {
 
     try {
       // Simple fetch without refresh parameter
+      // ADMIN: Request at least 15 threats with minimum 5 high-severity
       const limit = selectedCategory && selectedCategory !== 'All' ? 5 : 15;
       const cat = encodeURIComponent(selectedCategory || 'All');
+      const cacheBuster = Date.now();
       let url = (selectedCategory && selectedCategory !== 'All')
-        ? `${API_URL}/threats?limit=${limit}&category=${cat}`
-        : `${API_URL}/threats?limit=${limit}`;
+        ? `${API_URL}/threats?limit=${limit}&category=${cat}&admin=true&t=${cacheBuster}`
+        : `${API_URL}/threats?limit=${limit}&admin=true&t=${cacheBuster}`;
 
       const res = await fetch(url, {
         method: "GET",
@@ -278,11 +282,25 @@ function AdminDashboard({ logout }) {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${rawToken}`,
         },
+        cache: "no-store",
       });
 
       if (res.ok) {
         const data = await res.json();
         setThreats(Array.isArray(data) ? data : []);
+        console.log(`[ADMIN] Fetched ${Array.isArray(data) ? data.length : 0} threats with ${Array.isArray(data) ? data.filter(t => t.score >= 75).length : 0} high-severity`);
+        
+        // AUTO-BLOCK: When high-risk threats are displayed, trigger auto-blocking ONE BY ONE
+        if (Array.isArray(data)) {
+          const highRiskCount = data.filter(t => t.score >= 75).length;
+          if (highRiskCount > 0) {
+            console.log(`🛡️ ${highRiskCount} high-risk threats detected - initiating one-by-one auto-blocking...`);
+            // Trigger auto-block after a short delay to allow UI to update
+            setTimeout(() => {
+              autoBlockThreats();
+            }, 2000);
+          }
+        }
       } else if (res.status === 504) {
         console.error("Gateway timeout - OTX API slow or unavailable");
         setThreats([]);
@@ -297,14 +315,24 @@ function AdminDashboard({ logout }) {
     }
   };
 
-  // AUTO-BLOCK HIGH-RISK THREATS
+  // AUTO-BLOCK HIGH-RISK THREATS ONE BY ONE
   const autoBlockThreats = async () => {
     try {
       const currentToken = getToken();
       const rawToken = normalizeToken(currentToken);
       if (!rawToken) return;
 
-      console.log("🛡️ Starting automatic threat blocking...");
+      console.log("🛡️ Starting automatic threat blocking (one-by-one)...");
+      
+      // Filter high-severity threats from current display
+      const highRiskThreats = threats.filter(t => t.score >= 75);
+      
+      if (highRiskThreats.length === 0) {
+        console.log("No high-risk threats to auto-block");
+        return;
+      }
+      
+      console.log(`Found ${highRiskThreats.length} high-risk threats to block`);
       
       const res = await fetch(`${API_URL}/admin/auto-block-threats`, {
         method: "POST",
@@ -312,27 +340,28 @@ function AdminDashboard({ logout }) {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${rawToken}`,
         },
+        body: JSON.stringify({
+          threats: highRiskThreats
+        })
       });
 
       if (res.ok) {
         const data = await res.json();
-        console.log("✅ Auto-block complete:", data.summary);
+        console.log("✅ Auto-block response:", data);
         
-        // Refresh blocked threats list
-        await fetchUserBlocks();
-        
-        // Refresh threats list to remove blocked IPs from cache
-        await fetchThreats();
-        
-        // Show notification to admin only if new IPs were blocked
         if (data.auto_blocked && data.auto_blocked.length > 0) {
-          alert(`🛡️ Auto-Blocked ${data.auto_blocked.length} high-risk threat(s)!\n\nSummary:\n- Blocked: ${data.summary.successfully_auto_blocked}\n- Already blocked: ${data.summary.already_blocked}\n- Invalid IPs: ${data.summary.invalid_ips}`);
+          alert(`✅ Successfully auto-blocked ${data.auto_blocked.length} high-risk threat(s) this cycle!\n\nBlocked IPs:\n${data.auto_blocked.map(b => `  • ${b.ip} (Score: ${b.risk_score})`).join('\n')}`);
+          
+          // Refresh blocked threats list
+          await fetchAdminData();
+        } else if (data.already_blocked && data.already_blocked.length > 0) {
+          console.log(`ℹ️ ${data.already_blocked.length} threats already blocked`);
         }
       } else {
-        console.error("Auto-block failed:", res.status);
+        console.error("Failed to auto-block threats:", res.statusText);
       }
     } catch (err) {
-      console.error("Error during auto-block:", err);
+      console.error("Error auto-blocking threats:", err);
     }
   };
 

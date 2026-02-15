@@ -10,3 +10,4 @@ requests
 google-generativeai
 flask-limiter
 flask-talisman
+websockets
