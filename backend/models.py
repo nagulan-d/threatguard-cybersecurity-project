@@ -234,3 +234,147 @@ class BlockToken(db.Model):
             'created_at': self.created_at.isoformat(),
             'expires_at': self.expires_at.isoformat(),
         }
+
+
+class BlockingSyncRecord(db.Model):
+    """Track IP blocking synchronization between Windows and Kali VM"""
+    id = db.Column(db.Integer, primary_key=True)
+    ip_address = db.Column(db.String(45), nullable=False, index=True)
+    threat_indicator_id = db.Column(db.Integer, db.ForeignKey('threat_indicator.id'))
+    
+    # Blocking action details
+    action = db.Column(db.String(20), nullable=False)  # 'block', 'unblock'
+    reason = db.Column(db.String(500), default='')
+    risk_score = db.Column(db.Float, default=0.0)
+    threat_category = db.Column(db.String(100), default='')
+    
+    # Sync status tracking
+    initiated_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    
+    # Windows blocking status
+    windows_status = db.Column(db.String(20), default='pending')  # 'pending', 'blocked', 'unblocked', 'failed'
+    windows_rule_name = db.Column(db.String(255), default='')
+    windows_blocked_at = db.Column(db.DateTime)
+    windows_error = db.Column(db.String(500), default='')
+    
+    # Kali/Linux blocking status
+    linux_status = db.Column(db.String(20), default='pending')  # 'pending', 'blocked', 'unblocked', 'failed'
+    linux_rules = db.Column(db.String(1000), default='')  # JSON array of iptables rules
+    linux_blocked_at = db.Column(db.DateTime)
+    linux_error = db.Column(db.String(500), default='')
+    
+    # Sync completion
+    sync_completed = db.Column(db.Boolean, default=False)
+    completed_at = db.Column(db.DateTime)
+    sync_status = db.Column(db.String(20), default='in-progress')  # 'in-progress', 'completed', 'partial', 'failed'
+    
+    # Metadata
+    initiated_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    sync_attempt_count = db.Column(db.Integer, default=1)
+    last_sync_attempt = db.Column(db.DateTime)
+    
+    threat = db.relationship('ThreatIndicator', backref='blocking_syncs')
+    initiator = db.relationship('User', backref='blocking_syncs')
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'ip_address': self.ip_address,
+            'action': self.action,
+            'reason': self.reason,
+            'risk_score': self.risk_score,
+            'threat_category': self.threat_category,
+            'windows_status': self.windows_status,
+            'linux_status': self.linux_status,
+            'sync_status': self.sync_status,
+            'sync_completed': self.sync_completed,
+            'initiated_at': self.initiated_at.isoformat(),
+            'completed_at': self.completed_at.isoformat() if self.completed_at else None,
+        }
+
+
+class SyncLog(db.Model):
+    """Audit log for all blocking synchronization events"""
+    id = db.Column(db.Integer, primary_key=True)
+    sync_record_id = db.Column(db.Integer, db.ForeignKey('blocking_sync_record.id'), index=True)
+    
+    ip_address = db.Column(db.String(45), nullable=False, index=True)
+    action = db.Column(db.String(50), nullable=False)  # 'block_initiated', 'windows_blocked', 'linux_blocked', 'sync_completed', 'error'
+    component = db.Column(db.String(50), nullable=False)  # 'coordinator', 'windows', 'linux', 'api', 'websocket'
+    
+    message = db.Column(db.String(500), nullable=False)
+    status = db.Column(db.String(20), nullable=False)  # 'success', 'error', 'warning', 'info'
+    
+    details = db.Column(db.String(1000), default='')  # JSON with additional context
+    
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    
+    sync = db.relationship('BlockingSyncRecord', backref='logs')
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'sync_record_id': self.sync_record_id,
+            'ip_address': self.ip_address,
+            'action': self.action,
+            'component': self.component,
+            'message': self.message,
+            'status': self.status,
+            'timestamp': self.timestamp.isoformat(),
+        }
+
+
+class SyncConfig(db.Model):
+    """Configuration for sync behavior and policies"""
+    id = db.Column(db.Integer, primary_key=True)
+    
+    # Sync endpoints
+    linux_host = db.Column(db.String(255), nullable=False)  # IP/hostname of Kali/Linux VM
+    linux_port = db.Column(db.Integer, default=22)  # SSH port
+    linux_api_port = db.Column(db.Integer, default=5001)  # API port on Linux
+    
+    # Authentication
+    use_ssh = db.Column(db.Boolean, default=False)
+    use_api = db.Column(db.Boolean, default=True)
+    api_token = db.Column(db.String(500), default='')  # Encrypted API token
+    ssh_key_path = db.Column(db.String(255), default='')
+    ssh_username = db.Column(db.String(50), default='kali')
+    
+    # Sync behavior
+    enable_sync = db.Column(db.Boolean, default=True)
+    auto_retry_failed = db.Column(db.Boolean, default=True)
+    max_retry_attempts = db.Column(db.Integer, default=3)
+    retry_interval_seconds = db.Column(db.Integer, default=30)
+    
+    # Health checks
+    health_check_interval = db.Column(db.Integer, default=60)  # seconds
+    health_check_enabled = db.Column(db.Boolean, default=True)
+    last_health_check = db.Column(db.DateTime)
+    is_healthy = db.Column(db.Boolean, default=True)
+    
+    # Preview for both inbound and outbound
+    block_inbound = db.Column(db.Boolean, default=True)
+    block_outbound = db.Column(db.Boolean, default=True)
+    
+    # Logging
+    log_all_actions = db.Column(db.Boolean, default=True)
+    log_retention_days = db.Column(db.Integer, default=90)
+    
+    # Timestamps
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'linux_host': self.linux_host,
+            'linux_port': self.linux_port,
+            'linux_api_port': self.linux_api_port,
+            'enable_sync': self.enable_sync,
+            'auto_retry_failed': self.auto_retry_failed,
+            'max_retry_attempts': self.max_retry_attempts,
+            'health_check_enabled': self.health_check_enabled,
+            'is_healthy': self.is_healthy,
+            'block_inbound': self.block_inbound,
+            'block_outbound': self.block_outbound,
+        }
