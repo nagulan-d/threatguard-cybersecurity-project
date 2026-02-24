@@ -11,7 +11,7 @@ import jwt  # This should now work with PyJWT after reinstalling
 from datetime import datetime, timedelta
 from functools import wraps
 import json
-import re
+import re.\start_all_services.ps1
 from typing import Dict, Any, List, Optional
 
 # Import summarizer + scorer

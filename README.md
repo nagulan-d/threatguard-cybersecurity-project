@@ -1,8 +1,11 @@
 
 cd backend
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+.\.venv-1\Scripts\Activate.ps1
+.\start_all_services.ps1
 //deactivate
+
+python websocket_server.py
 
 pip install -r requirements.txt
 flask db upgrade
@@ -11,6 +14,7 @@ flask db upgrade
 # The backend needs admin privileges to create Windows Firewall rules
 # Right-click PowerShell -> "Run as Administrator", then run:
 python app.py
+
 
 # Or use the admin startup script:
 # .\START_BACKEND_ADMIN.ps1
