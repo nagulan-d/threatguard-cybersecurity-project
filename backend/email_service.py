@@ -339,9 +339,16 @@ This is an automated threat notification from your CTI Platform.
             html=html_body
         )
         
-        mail.send(msg)
-        print(f"[SUCCESS] Threat notification email sent to {recipient_email}")
-        return True
+        for attempt in range(2):
+            try:
+                # Use a fresh SMTP connection per send; this is more resilient on flaky links.
+                with mail.connect() as conn:
+                    conn.send(msg)
+                print(f"[SUCCESS] Threat notification email sent to {recipient_email}")
+                return True
+            except Exception as send_err:
+                print(f"[WARNING] Threat email attempt {attempt + 1} failed for {recipient_email}: {send_err}")
+        return False
         
     except Exception as e:
         print(f"[ERROR] Failed to send threat notification email to {recipient_email}: {str(e)}")
@@ -410,10 +417,16 @@ This address has been processed and your network protection updated accordingly.
             body=text_body,
             html=html_body
         )
-        
-        mail.send(msg)
-        print(f"[SUCCESS] Confirmation email sent to {recipient_email}")
-        return True
+
+        for attempt in range(2):
+            try:
+                with mail.connect() as conn:
+                    conn.send(msg)
+                print(f"[SUCCESS] Confirmation email sent to {recipient_email}")
+                return True
+            except Exception as send_err:
+                print(f"[WARNING] Confirmation email attempt {attempt + 1} failed for {recipient_email}: {send_err}")
+        return False
         
     except Exception as e:
         print(f"[ERROR] Failed to send confirmation email to {recipient_email}: {str(e)}")

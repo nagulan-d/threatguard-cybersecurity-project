@@ -4,13 +4,12 @@ Continuously monitors threat database and automatically blocks high-risk IPs
 Runs as a background service with configurable thresholds
 """
 
-import asyncio
 import json
 import logging
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Set
 import requests
@@ -28,6 +27,8 @@ CHECK_INTERVAL = int(os.getenv("AUTO_BLOCK_CHECK_INTERVAL", 120))  # Seconds
 MAX_BLOCKS_PER_CYCLE = int(os.getenv("AUTO_BLOCK_MAX_PER_CYCLE", 5))
 BLOCK_DELAY = int(os.getenv("AUTO_BLOCK_DELAY", 10))  # Delay between blocks
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:5000")
+AUTO_BLOCK_ADMIN_USERNAME = os.getenv("AUTO_BLOCK_ADMIN_USERNAME") or os.getenv("ADMIN_USERNAME") or "admin"
+AUTO_BLOCK_ADMIN_PASSWORD = os.getenv("AUTO_BLOCK_ADMIN_PASSWORD") or os.getenv("ADMIN_PASSWORD") or "admin123"
 
 # JWT token for API authentication
 TOKEN_FILE = Path(__file__).parent / ".auto_blocker_token"
@@ -91,6 +92,44 @@ class AutoBlockMonitor:
                            f"{len(self.seen_threats)} seen threats")
             except Exception as e:
                 logger.error(f"Failed to load history: {e}")
+
+    def _save_token(self, token: str):
+        """Persist JWT token for monitor restarts"""
+        try:
+            with open(TOKEN_FILE, 'w') as f:
+                f.write(token)
+        except Exception as e:
+            logger.error(f"Failed to save token: {e}")
+
+    def _refresh_token(self) -> bool:
+        """Refresh JWT token using admin credentials"""
+        try:
+            response = requests.post(
+                f"{BACKEND_URL}/api/login",
+                json={
+                    "username": AUTO_BLOCK_ADMIN_USERNAME,
+                    "password": AUTO_BLOCK_ADMIN_PASSWORD,
+                },
+                timeout=10,
+            )
+
+            if response.status_code == 200:
+                token = (response.json() or {}).get("token", "")
+                if token:
+                    self.jwt_token = token
+                    self._save_token(token)
+                    logger.info("JWT token refreshed successfully")
+                    return True
+
+                logger.error("Login succeeded but token missing in response")
+                return False
+
+            logger.error(f"Token refresh failed: {response.status_code} - {response.text}")
+            return False
+
+        except Exception as e:
+            logger.error(f"Error refreshing token: {e}")
+            return False
     
     def _save_history(self):
         """Save blocking history"""
@@ -99,7 +138,7 @@ class AutoBlockMonitor:
                 json.dump({
                     'blocked_ips': list(self.blocked_ips),
                     'seen_threats': list(self.seen_threats),
-                    'last_updated': datetime.utcnow().isoformat()
+                    'last_updated': datetime.now(timezone.utc).isoformat()
                 }, f, indent=2)
         except Exception as e:
             logger.error(f"Failed to save history: {e}")
@@ -163,6 +202,10 @@ class AutoBlockMonitor:
     def block_threat(self, threat: Dict[str, Any], ip_address: str) -> bool:
         """Block a specific threat IP via backend API"""
         try:
+            if not self.jwt_token and not self._refresh_token():
+                logger.error("No valid JWT token available for auto-block request")
+                return False
+
             risk_score = threat.get('severity_score') or threat.get('score') or 0
             
             payload = {
@@ -185,6 +228,17 @@ class AutoBlockMonitor:
                 headers=headers,
                 timeout=15
             )
+
+            if response.status_code == 401:
+                logger.warning("Received 401 from block endpoint, refreshing token and retrying once")
+                if self._refresh_token():
+                    headers["Authorization"] = f"Bearer {self.jwt_token}"
+                    response = requests.post(
+                        f"{BACKEND_URL}/api/admin/block-threat-auto",
+                        json=payload,
+                        headers=headers,
+                        timeout=15
+                    )
             
             if response.status_code == 201:
                 logger.info(f"BLOCKED: {ip_address} (Score: {risk_score})")
@@ -287,9 +341,9 @@ class AutoBlockMonitor:
             return
         
         if not self.jwt_token:
-            logger.error("No JWT token available - cannot proceed")
-            logger.info("Create an admin user and save the JWT token to .auto_blocker_token")
-            return
+            logger.warning("No JWT token available at startup, attempting login refresh")
+            if not self._refresh_token():
+                logger.warning("Startup token refresh failed. Monitor will continue and retry on demand.")
         
         self.running = True
         

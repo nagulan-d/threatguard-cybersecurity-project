@@ -20,6 +20,14 @@ python app.py
 # .\START_BACKEND_ADMIN.ps1
 ```
 
+websocket connction : tail -f /opt/threatguard_agent/logs/blocking_agent.log
+live block in vm : sudo journalctl -u threatguard-agent -f
+blcked ip in vm : sudo iptables -S THREATGUARD_BLOCK
+
+rule : sudo iptables -L -v -n | grep <ip address>
+
+check blocked ip :  sudo iptables -S
+
 Backend runs on: `http://127.0.0.1:5000`
 
 Deployment guide: readme/DEPLOYMENT_GUIDE.md

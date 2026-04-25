@@ -7,7 +7,7 @@ Supports bi-directional communication for immediate firewall sync
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Set, Dict, Any, Optional
 import websockets
 from websockets.server import WebSocketServerProtocol
@@ -21,6 +21,8 @@ load_dotenv()
 WS_HOST = os.getenv("WS_HOST", "0.0.0.0")
 WS_PORT = int(os.getenv("WS_PORT", 8765))
 SECRET_KEY = os.getenv("SECRET_KEY", "default_secret")
+AGENT_API_TOKEN = os.getenv("AGENT_API_TOKEN", "")
+ALLOW_EXPIRED_VM_AGENT_TOKEN = os.getenv("ALLOW_EXPIRED_VM_AGENT_TOKEN", "true").lower() == "true"
 
 # Logging setup
 logging.basicConfig(
@@ -47,7 +49,7 @@ class WebSocketManager:
             "type": "connected",
             "role": "admin",
             "message": "Connected to IP blocking WebSocket server",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }))
     
     async def register_vm_agent(self, websocket: WebSocketServerProtocol, agent_id: str):
@@ -59,7 +61,7 @@ class WebSocketManager:
             "type": "connected",
             "role": "vm_agent",
             "message": "VM agent connected to sync server",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }))
     
     async def register_user(self, websocket: WebSocketServerProtocol, user_id: str):
@@ -71,7 +73,7 @@ class WebSocketManager:
             "type": "connected",
             "role": "user",
             "message": "Connected to threat monitoring",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }))
     
     async def unregister(self, websocket: WebSocketServerProtocol):
@@ -158,7 +160,7 @@ class WebSocketManager:
             "type": "ip_blocked",
             "ip_address": ip_address,
             "details": details,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
         # Notify admins
@@ -171,7 +173,7 @@ class WebSocketManager:
             "reason": details.get("reason", "High-risk threat detected"),
             "threat_type": details.get("threat_type", "Unknown"),
             "risk_score": details.get("risk_score", 0),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
         
         logger.info(f"Broadcasted IP block notification: {ip_address}")
@@ -182,7 +184,7 @@ class WebSocketManager:
             "type": "ip_unblocked",
             "ip_address": ip_address,
             "details": details,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
         # Notify admins
@@ -192,7 +194,7 @@ class WebSocketManager:
         await self.broadcast_to_vm_agents({
             "type": "unblock_ip",
             "ip_address": ip_address,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
         
         logger.info(f"Broadcasted IP unblock notification: {ip_address}")
@@ -202,7 +204,7 @@ class WebSocketManager:
         message = {
             "type": "auto_block_triggered",
             "details": details,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
         await self.broadcast_to_admins(message)
@@ -212,10 +214,15 @@ class WebSocketManager:
 ws_manager = WebSocketManager()
 
 
-def verify_token(token: str) -> Dict[str, Any]:
+def verify_token(token: str, verify_exp: bool = True) -> Dict[str, Any]:
     """Verify JWT token and extract payload"""
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=["HS256"],
+            options={"verify_exp": verify_exp},
+        )
         return payload
     except jwt.ExpiredSignatureError:
         raise ValueError("Token expired")
@@ -238,24 +245,59 @@ async def handle_client(websocket: WebSocketServerProtocol, path: Optional[str] 
         if not token:
             await websocket.send(json.dumps({"error": "No token provided"}))
             return
-        
-        try:
-            payload = verify_token(token)
-            client_id = payload.get("user_id")
-            client_role = payload.get("role", "user")
-        except ValueError as e:
-            await websocket.send(json.dumps({"error": str(e)}))
-            return
-        
-        # Check if this is a VM agent (special authentication)
-        if auth_data.get("client_type") == "vm_agent":
-            agent_id = auth_data.get("agent_id", client_id)
-            await ws_manager.register_vm_agent(websocket, agent_id)
-            client_role = "vm_agent"
-        elif client_role == "admin":
-            await ws_manager.register_admin(websocket, client_id)
+
+        client_type = auth_data.get("client_type")
+
+        # VM agent authentication supports:
+        # 1) AGENT_API_TOKEN static secret (preferred for long-running agents)
+        # 2) JWT token (legacy)
+        # 3) Optional expired JWT acceptance for resilient reconnect in dev setups
+        if client_type == "vm_agent":
+            agent_id = auth_data.get("agent_id") or "vm-agent"
+            authenticated = False
+
+            if AGENT_API_TOKEN and token == AGENT_API_TOKEN:
+                client_id = agent_id
+                client_role = "vm_agent"
+                authenticated = True
+                logger.info("VM agent authenticated via AGENT_API_TOKEN")
+
+            if not authenticated:
+                try:
+                    payload = verify_token(token, verify_exp=True)
+                    client_id = payload.get("user_id") or agent_id
+                    client_role = "vm_agent"
+                    authenticated = True
+                except ValueError as e:
+                    if str(e) == "Token expired" and ALLOW_EXPIRED_VM_AGENT_TOKEN:
+                        try:
+                            payload = verify_token(token, verify_exp=False)
+                            client_id = payload.get("user_id") or agent_id
+                            client_role = "vm_agent"
+                            authenticated = True
+                            logger.warning("VM agent connected with expired JWT (allowed by config)")
+                        except ValueError:
+                            pass
+
+            if not authenticated:
+                await websocket.send(json.dumps({"error": "Token expired"}))
+                return
+
+            await ws_manager.register_vm_agent(websocket, str(agent_id))
+
         else:
-            await ws_manager.register_user(websocket, client_id)
+            try:
+                payload = verify_token(token, verify_exp=True)
+                client_id = payload.get("user_id")
+                client_role = payload.get("role", "user")
+            except ValueError as e:
+                await websocket.send(json.dumps({"error": str(e)}))
+                return
+
+            if client_role == "admin":
+                await ws_manager.register_admin(websocket, client_id)
+            else:
+                await ws_manager.register_user(websocket, client_id)
         
         logger.info(f"Client authenticated: ID={client_id}, Role={client_role}")
         
@@ -286,7 +328,7 @@ async def handle_message(websocket: WebSocketServerProtocol, data: Dict[str, Any
     msg_type = data.get("type")
     
     if msg_type == "ping":
-        await websocket.send(json.dumps({"type": "pong", "timestamp": datetime.utcnow().isoformat()}))
+        await websocket.send(json.dumps({"type": "pong", "timestamp": datetime.now(timezone.utc).isoformat()}))
     
     elif msg_type == "vm_agent_status":
         # VM agent reporting status
@@ -298,7 +340,7 @@ async def handle_message(websocket: WebSocketServerProtocol, data: Dict[str, Any
                 "agent_id": client_id,
                 "status": data.get("status"),
                 "blocked_ips_count": data.get("blocked_ips_count", 0),
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             })
     
     elif msg_type == "block_confirmation":
@@ -311,7 +353,7 @@ async def handle_message(websocket: WebSocketServerProtocol, data: Dict[str, Any
                 "agent_id": client_id,
                 "success": data.get("success", True),
                 "message": data.get("message", ""),
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             })
     
     elif msg_type == "unblock_confirmation":
@@ -324,7 +366,7 @@ async def handle_message(websocket: WebSocketServerProtocol, data: Dict[str, Any
                 "agent_id": client_id,
                 "success": data.get("success", True),
                 "message": data.get("message", ""),
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             })
     
     elif msg_type == "request_sync":

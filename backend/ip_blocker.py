@@ -21,7 +21,11 @@ class IPBlocker:
     
     def __init__(self, rules_file: str = "blocked_ips.json"):
         """Initialize IP blocker with persistence file"""
-        self.rules_file = rules_file
+        self.base_dir = Path(__file__).resolve().parent
+        if os.path.isabs(rules_file):
+            self.rules_file = rules_file
+        else:
+            self.rules_file = str(self.base_dir / rules_file)
         self.blocked_ips: List[str] = []
         self.whitelist_ips: List[str] = []
         self.os_type = self._detect_os_type()
@@ -32,6 +36,7 @@ class IPBlocker:
         self.kali_vm_user = os.getenv("KALI_VM_USER", "kali")
         self.kali_vm_port = os.getenv("KALI_VM_PORT", "22")
         self.kali_vm_key_path = os.getenv("KALI_VM_KEY_PATH")
+        self.legacy_rules_file = str(self.base_dir.parent / "blocked_ips.json")
         self.load_rules()
         logger.info(f"IP Blocker initialized. OS: {self.os_type}, Linux: {self.is_linux}, Windows: {self.is_windows}")
     
@@ -68,6 +73,7 @@ class IPBlocker:
     
     def load_rules(self) -> None:
         """Load blocked IPs from persistent storage"""
+        self._migrate_legacy_rules_if_needed()
         if os.path.exists(self.rules_file):
             try:
                 with open(self.rules_file, 'r') as f:
@@ -77,6 +83,35 @@ class IPBlocker:
                 logger.info(f"Loaded {len(self.blocked_ips)} blocked IPs")
             except Exception as e:
                 logger.warning(f"Failed to load rules: {e}")
+
+    def _migrate_legacy_rules_if_needed(self) -> None:
+        """Merge legacy workspace-root blocked_ips.json into backend-local rules file."""
+        try:
+            if not os.path.exists(self.legacy_rules_file):
+                return
+
+            legacy_data = {}
+            with open(self.legacy_rules_file, 'r') as f:
+                legacy_data = json.load(f)
+
+            current_data = {"blocked_ips": [], "whitelist_ips": []}
+            if os.path.exists(self.rules_file):
+                with open(self.rules_file, 'r') as f:
+                    current_data = json.load(f)
+
+            merged_blocked = sorted(set((current_data.get('blocked_ips') or []) + (legacy_data.get('blocked_ips') or [])))
+            merged_whitelist = sorted(set((current_data.get('whitelist_ips') or []) + (legacy_data.get('whitelist_ips') or [])))
+
+            with open(self.rules_file, 'w') as f:
+                json.dump({
+                    'blocked_ips': merged_blocked,
+                    'whitelist_ips': merged_whitelist
+                }, f, indent=2)
+
+            os.remove(self.legacy_rules_file)
+            logger.info("Migrated legacy blocked_ips.json into backend/blocked_ips.json")
+        except Exception as e:
+            logger.warning(f"Legacy rules migration skipped: {e}")
     
     def save_rules(self) -> None:
         """Persist blocked IPs to file"""
@@ -275,7 +310,7 @@ class IPBlocker:
             
             if inbound_success and outbound_success:
                 print(f"[IP_BLOCKER] ✅✅ SUCCESS - Both firewall rules created for {ip}")
-                logger.info(f"✅ Windows Firewall rules created for {ip} (INBOUND + OUTBOUND)")
+                logger.info(f"Windows Firewall rules created for {ip} (INBOUND + OUTBOUND)")
                 
                 # Verify rules were actually created
                 verify_cmd = f'netsh advfirewall firewall show rule name="{rule_name_in}"'
@@ -298,7 +333,7 @@ class IPBlocker:
                 # Check for common errors
                 if "access is denied" in error_msg.lower() or "requested operation requires elevation" in error_msg.lower():
                     print(f"[IP_BLOCKER] ❌ ADMIN PRIVILEGES REQUIRED!")
-                    logger.error(f"❌ netsh requires administrator privileges - run backend as administrator")
+                    logger.error("netsh requires administrator privileges - run backend as administrator")
                     return False, "ADMIN PRIVILEGES REQUIRED - Run backend as Administrator to use Windows Firewall"
                 
                 print(f"[IP_BLOCKER] ❌ Failed to create firewall rules for {ip}: {error_msg}")

@@ -89,8 +89,8 @@ echo "[STEP 5/7] Creating default configuration..."
 cat > $AGENT_DIR/agent_config.json << 'EOF'
 {
   "agent_id": "vm-agent-1",
-  "websocket_url": "ws://192.168.1.100:8765",
-  "api_url": "http://192.168.1.100:5000",
+    "websocket_url": "ws://192.168.56.1:8765",
+    "api_url": "http://192.168.56.1:5000",
   "heartbeat_interval": 30,
   "reconnect_delay": 5,
   "jwt_token": null

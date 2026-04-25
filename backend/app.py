@@ -4,6 +4,8 @@ from flask_migrate import Migrate
 from flask_cors import CORS
 import requests
 import os
+import smtplib
+import ssl
 from dotenv import load_dotenv
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -13,6 +15,7 @@ from functools import wraps
 import json
 import re
 import random
+from email.mime.text import MIMEText
 from typing import Dict, Any, List, Optional
 
 # Import summarizer + scorer
@@ -54,7 +57,7 @@ try:
             from flask_talisman import Talisman
             # Keep CSP permissive by default to avoid blocking the React dev app
             Talisman(app, content_security_policy=None, force_https=False)
-            print("?? Talisman security headers enabled")
+            print("[SECURITY] Talisman security headers enabled")
         except Exception as e:
             print(f"(Info) flask-talisman not active: {e}")
     # Rate limiting (specific endpoints set later)
@@ -62,7 +65,7 @@ try:
         from flask_limiter import Limiter
         from flask_limiter.util import get_remote_address
         limiter = Limiter(get_remote_address, app=app, default_limits=[])
-        print("??  Rate limiter initialized")
+        print("[SECURITY] Rate limiter initialized")
     except Exception as e:
         limiter = None
         print(f"(Info) flask-limiter not active: {e}")
@@ -72,16 +75,38 @@ except Exception as e:
 
 # ---------------- CONFIG ----------------
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "default_secret")
-app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///users.db")
+# Keep DB path stable even when app is launched from different working directories.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_DB_PATH = os.path.join(BASE_DIR, "instance", "data.db")
+os.makedirs(os.path.dirname(DEFAULT_DB_PATH), exist_ok=True)
+DEFAULT_DB_URI = f"sqlite:///{DEFAULT_DB_PATH.replace('\\', '/')}"
+raw_db_uri = (os.getenv("DATABASE_URL") or "").strip()
+if not raw_db_uri:
+    db_uri = DEFAULT_DB_URI
+elif raw_db_uri.startswith("sqlite:///"):
+    sqlite_path = raw_db_uri[len("sqlite:///"):]
+    if os.path.isabs(sqlite_path):
+        db_uri = raw_db_uri
+    else:
+        # Treat relative sqlite paths as backend/instance-relative for consistency.
+        resolved = os.path.join(BASE_DIR, "instance", os.path.basename(sqlite_path or "data.db"))
+        db_uri = f"sqlite:///{resolved.replace('\\', '/')}"
+else:
+    db_uri = raw_db_uri
+
+app.config["SQLALCHEMY_DATABASE_URI"] = db_uri
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 # Email Configs (from .env)
 app.config["MAIL_SERVER"] = os.getenv("MAIL_SERVER", "smtp.gmail.com")
 app.config["MAIL_PORT"] = int(os.getenv("MAIL_PORT", 587))
 app.config["MAIL_USE_TLS"] = os.getenv("MAIL_USE_TLS", "True").lower() == "true"
+app.config["MAIL_USE_SSL"] = os.getenv("MAIL_USE_SSL", "False").lower() == "true"
 app.config["MAIL_USERNAME"] = os.getenv("MAIL_USERNAME")
 app.config["MAIL_PASSWORD"] = os.getenv("MAIL_PASSWORD")
 app.config["MAIL_DEFAULT_SENDER"] = app.config["MAIL_USERNAME"]
+app.config["MAIL_TIMEOUT"] = int(os.getenv("MAIL_TIMEOUT", 30))
+app.config["MAIL_MAX_EMAILS"] = int(os.getenv("MAIL_MAX_EMAILS", 1))
 
 mail = Mail(app)
 
@@ -102,16 +127,17 @@ API_EXPORT_URL = os.getenv("API_EXPORT_URL") or "https://otx.alienvault.com/api/
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 NOTIFY_THRESHOLD = int(os.getenv("NOTIFY_THRESHOLD", 80))
 THREATS_OUTPUT = os.getenv("THREATS_OUTPUT", "recent_threats.json")
-THREATS_POLL_INTERVAL = int(os.getenv("THREATS_POLL_INTERVAL", 120))  # Check every 2 minutes for notifications and auto-blocking
+THREATS_POLL_INTERVAL = int(os.getenv("THREATS_POLL_INTERVAL", 60))  # Check every minute for notifications and auto-blocking
 THREATS_LIMIT = int(os.getenv("THREATS_LIMIT", 30))  # Increased default to get more fresh indicators
 THREATS_FETCH_INTERVAL = int(os.getenv("THREATS_FETCH_INTERVAL", THREATS_POLL_INTERVAL))  # Fetch from OTX every N seconds
+NOTIFICATION_RETRY_INTERVAL = int(os.getenv("NOTIFICATION_RETRY_INTERVAL", 60))  # Seconds between notification attempts per user
 AGENT_API_TOKEN = os.getenv("AGENT_API_TOKEN")
 AGENT_REQUIRE_TOKEN = os.getenv("AGENT_REQUIRE_TOKEN", "true").lower() == "true"
 
 # Auto-blocking configuration
 AUTO_BLOCK_ENABLED = os.getenv("AUTO_BLOCK_ENABLED", "true").lower() == "true"
 AUTO_BLOCK_THRESHOLD = int(os.getenv("AUTO_BLOCK_THRESHOLD", 75))  # Block IPs with score >= 75 (High risk)
-AUTO_BLOCK_DELAY = int(os.getenv("AUTO_BLOCK_DELAY", 30))  # Delay between blocks in seconds
+AUTO_BLOCK_DELAY = 0  # Force immediate blocking without sleep between IPs.
 AUTO_BLOCK_MAX_PER_CYCLE = int(os.getenv("AUTO_BLOCK_MAX_PER_CYCLE", 5))  # Max blocks per cycle
 
 db = SQLAlchemy(app)
@@ -319,16 +345,19 @@ def normalize_indicator(indicator: Any, pulse_title: str = "") -> Dict[str, Any]
     severity = compute_severity_score(indicator)
     category = categorize_indicator(indicator, summary)
 
+    # Use the stronger of model score and computed severity score so high-risk detection works reliably.
+    effective_score = max(float(score or 0), float(severity.get("severity_score") or 0))
+
     return {
         "indicator": indicator_value,
         "type": indicator_type,
         "summary": summary,
         "prevention": prevention,
         "prevention_steps": prevention_steps,
-        "score": score,
+        "score": round(effective_score, 2),
         "timestamp": timestamp,
         "otx": indicator if isinstance(indicator, dict) else None,
-        "alert": score >= NOTIFY_THRESHOLD,
+        "alert": effective_score >= NOTIFY_THRESHOLD,
         "category": category,
         **severity,
     }
@@ -569,25 +598,58 @@ def send_email_notification(to_email, subject, body, user_id=None):
     email_sent = False
     error_msg = None
 
-    try:
-        print(f"[EMAIL] Attempting to send email to {to_email} using SMTP...")
-        print(f"   Server: {app.config['MAIL_SERVER']}:{app.config['MAIL_PORT']}")
-        print(f"   Username: {app.config['MAIL_USERNAME']}")
-        print(f"   TLS: {app.config['MAIL_USE_TLS']}")
-        
-        msg = Message(subject=subject, recipients=[to_email])
-        msg.body = body
-        mail.send(msg)
-        print(f"[SUCCESS] Email sent successfully to {to_email}")
-        email_sent = True
-    except Exception as e:
-        error_msg = str(e)
-        error_type = type(e).__name__
-        print(f"[WARNING] Email failed to {to_email}")
-        print(f"   Error Type: {error_type}")
-        print(f"   Error Message: {error_msg}")
-        print(f"[STORAGE] Storing notification in database as fallback")
-        email_sent = False
+    print(f"[EMAIL] Attempting to send email to {to_email} using SMTP...")
+    print(f"   Server: {app.config['MAIL_SERVER']}:{app.config['MAIL_PORT']}")
+    print(f"   Username: {app.config['MAIL_USERNAME']}")
+    print(f"   TLS: {app.config['MAIL_USE_TLS']}")
+
+    # Retry once for transient SMTP disconnects like "Connection unexpectedly closed".
+    for attempt in range(2):
+        try:
+            msg = Message(subject=subject, recipients=[to_email])
+            msg.body = body
+            with mail.connect() as conn:
+                conn.send(msg)
+            print(f"[SUCCESS] Email sent successfully to {to_email}")
+            email_sent = True
+            error_msg = None
+            break
+        except Exception as e:
+            error_msg = str(e)
+            error_type = type(e).__name__
+            print(f"[WARNING] Email attempt {attempt + 1} failed to {to_email}")
+            print(f"   Error Type: {error_type}")
+            print(f"   Error Message: {error_msg}")
+            email_sent = False
+
+    if not email_sent:
+        try:
+            smtp_host = app.config.get("MAIL_SERVER")
+            smtp_port = int(app.config.get("MAIL_PORT") or 587)
+            smtp_user = app.config.get("MAIL_USERNAME")
+            smtp_pass = app.config.get("MAIL_PASSWORD")
+            use_tls = bool(app.config.get("MAIL_USE_TLS"))
+
+            msg = MIMEText(body or "", "plain", "utf-8")
+            msg["Subject"] = subject
+            msg["From"] = smtp_user or ""
+            msg["To"] = to_email
+
+            with smtplib.SMTP(host=smtp_host, port=smtp_port, timeout=30) as server:
+                server.ehlo()
+                if use_tls:
+                    server.starttls(context=ssl.create_default_context())
+                    server.ehlo()
+                if smtp_user and smtp_pass:
+                    server.login(smtp_user, smtp_pass)
+                server.sendmail(smtp_user or "", [to_email], msg.as_string())
+
+            print(f"[SUCCESS] Direct SMTP fallback sent email to {to_email}")
+            email_sent = True
+            error_msg = None
+        except Exception as smtp_e:
+            print(f"[WARNING] Direct SMTP fallback failed for {to_email}: {smtp_e}")
+            error_msg = str(smtp_e)
 
     # Always store notification in database for user dashboard
     if user_id:
@@ -922,115 +984,147 @@ def get_all_websites(current_user):
 # --- Threat Intelligence Endpoint --- (Updated: Live refresh support)
 @app.route("/api/threats", methods=["GET"])
 def get_threats():
-    """
-    SYNTHETIC VERSION - Generates fresh unique threats on every request.
-    - Clears all previous displayed threats
-    - Generates 15 new threats with unique IPs
-    - Balanced distribution: 5 High, 5 Medium, 5 Low
-    - Equal category distribution
-    - No duplicates across refreshes
-    """
-    print("\n" + "="*80)
-    print("[API] /api/threats called - SYNTHETIC GENERATION MODE")
-    print("="*80)
-    
+    """Live fetch from OTX with response rotation to avoid repeating the same threats on refresh."""
+    print("\n" + "=" * 80)
+    print("[API] /api/threats called - LIVE FETCH MODE")
+    print("=" * 80)
+
     try:
         limit = int(request.args.get("limit", 15))
     except Exception:
         limit = 15
-    
-    # Admin dashboard always uses exactly 15 threats
+
     is_admin_request = request.args.get("admin", "false").lower() == "true"
     if is_admin_request:
         limit = 15
-    
-    # Get category filter (optional)
+
     category_filter = request.args.get("category")
     if category_filter == "All":
         category_filter = None
-    
+
     try:
-        import uuid
-        from threat_generator import generate_fresh_threats, get_registry_stats
-        
-        # STEP 1: Clear ALL previous displayed threats
-        print(f"[STEP 1] Clearing all previous displayed threats...")
-        deleted_count = db.session.query(DisplayedThreat).delete()
-        db.session.commit()
-        print(f"[STEP 1] ✅ Cleared {deleted_count} old threats from database")
-        
-        # STEP 2: Get all previously used IPs from database to ensure absolute uniqueness
-        all_blocked_ips = set(
-            ip[0] for ip in db.session.query(BlockedThreat.ip_address).distinct().all()
-        )
-        print(f"[STEP 2] Found {len(all_blocked_ips)} blocked IPs to exclude")
-        
-        # STEP 3: Generate fresh synthetic threats
-        print(f"[STEP 3] Generating {limit} fresh synthetic threats...")
-        session_id = str(uuid.uuid4())[:8]
-        
-        fresh_threats = generate_fresh_threats(count=limit, excluded_ips=all_blocked_ips)
-        
-        # STEP 4: Filter by category if requested
+        fetch_size = max(limit * 8, 120)
+        threats = fetch_and_cache(limit=fetch_size, modified_since="24h") or []
+
         if category_filter:
-            fresh_threats = [t for t in fresh_threats if t.get("category") == category_filter]
-            print(f"[STEP 4] Filtered to {len(fresh_threats)} threats in category '{category_filter}'")
-        
-        # STEP 5: Store in database for tracking
-        print(f"[STEP 5] Storing {len(fresh_threats)} threats in database...")
-        for threat_data in fresh_threats:
-            displayed_threat = DisplayedThreat(
-                threat_id=threat_data['id'],
-                ip_address=threat_data['ip'],
-                category=threat_data['category'],
-                threat_type=threat_data['type'],
-                severity=threat_data['severity'],
-                score=threat_data['score'],
-                status=threat_data['status'],
-                detection_time=datetime.fromisoformat(threat_data['detection_time'].replace('Z', '')),
-                session_id=session_id
+            threats = [t for t in threats if t.get("category") == category_filter]
+
+        # De-prioritize threats already shown recently so dashboard refreshes feel live.
+        now = datetime.utcnow()
+        recent_cutoff = now - timedelta(minutes=20)
+        recent_ids = {
+            r[0]
+            for r in db.session.query(DisplayedThreat.threat_id)
+            .filter(DisplayedThreat.displayed_at >= recent_cutoff)
+            .all()
+        }
+
+        rotated = []
+        fallback = []
+        for threat in threats:
+            threat_id = (
+                threat.get("id")
+                or f"{threat.get('indicator', '')}|{threat.get('type', '')}|{threat.get('timestamp', '')}"
             )
-            db.session.add(displayed_threat)
-        
+            if str(threat_id) in recent_ids:
+                fallback.append(threat)
+            else:
+                rotated.append(threat)
+
+        random.shuffle(rotated)
+        random.shuffle(fallback)
+        selected = rotated[:limit]
+        if len(selected) < limit:
+            selected.extend(fallback[: limit - len(selected)])
+
+        # If live feed variety is too low, blend in synthetic unique threats to avoid repeated dashboards.
+        low_variety = len(rotated) < max(3, limit // 2)
+        if low_variety:
+            keep_live = min(len(selected), max(3, limit // 3))
+            selected = selected[:keep_live]
+
+        if len(selected) < limit:
+            try:
+                excluded_ips = {
+                    t.get("ip") or t.get("ip_address") or extract_ip_from_indicator(t.get("indicator"))
+                    for t in selected
+                }
+                needed = limit - len(selected)
+                categories = ["Phishing", "Malware", "Current Threats", "DDoS Attacks", "Vulnerability Exploits"]
+                for _ in range(needed):
+                    # Create synthetic unique IPv4 that does not collide with current response.
+                    for _attempt in range(20):
+                        octets = [
+                            random.randint(11, 223),
+                            random.randint(0, 255),
+                            random.randint(0, 255),
+                            random.randint(1, 254),
+                        ]
+                        ip_val = ".".join(map(str, octets))
+                        if ip_val not in excluded_ips:
+                            excluded_ips.add(ip_val)
+                            break
+                    score = round(random.uniform(75, 95), 2)
+                    selected.append({
+                        "id": f"synthetic-{ip_val}-{int(datetime.utcnow().timestamp()*1000)}",
+                        "indicator": ip_val,
+                        "ip": ip_val,
+                        "type": "IPv4",
+                        "summary": "Synthetic fallback threat generated to keep live dashboard feed fresh.",
+                        "prevention": "Block and monitor this IOC.",
+                        "score": score,
+                        "severity": "High",
+                        "severity_score": score,
+                        "timestamp": datetime.utcnow().isoformat() + "Z",
+                        "category": random.choice(categories),
+                        "status": "Active",
+                        "source": "synthetic-fallback",
+                    })
+                    if len(selected) >= limit:
+                        break
+            except Exception as gen_err:
+                print(f"[API] Synthetic fallback unavailable: {gen_err}")
+
+        # Maintain recent history table with bounded lifetime.
+        db.session.query(DisplayedThreat).filter(DisplayedThreat.displayed_at < (now - timedelta(hours=2))).delete()
+        for threat in selected:
+            threat_id = str(
+                threat.get("id")
+                or f"{threat.get('indicator', '')}|{threat.get('type', '')}|{threat.get('timestamp', '')}"
+            )
+            ip_address = str(
+                threat.get("ip")
+                or threat.get("ip_address")
+                or extract_ip_from_indicator(threat.get("indicator"))
+                or "0.0.0.0"
+            )
+            exists = db.session.query(DisplayedThreat.id).filter_by(threat_id=threat_id).first()
+            if not exists:
+                db.session.add(DisplayedThreat(
+                    threat_id=threat_id,
+                    ip_address=ip_address,
+                    category=str(threat.get("category") or "Other"),
+                    threat_type=str(threat.get("type") or "Unknown"),
+                    severity=str(threat.get("severity") or "Medium"),
+                    score=float(threat.get("score") or 0),
+                    status=str(threat.get("status") or "Active"),
+                    detection_time=now,
+                    session_id="live",
+                ))
         db.session.commit()
-        print(f"[STEP 5] ✅ Stored {len(fresh_threats)} threats in database")
-        
-        # STEP 6: Verify distribution
-        high_count = len([t for t in fresh_threats if t['severity'] == 'High'])
-        medium_count = len([t for t in fresh_threats if t['severity'] == 'Medium'])
-        low_count = len([t for t in fresh_threats if t['severity'] == 'Low'])
-        
-        print("\n" + "-"*80)
-        print(f"[DISTRIBUTION SUMMARY]")
-        print(f"  Total Threats: {len(fresh_threats)}")
-        print(f"  High Severity: {high_count} (score ≥ 75)")
-        print(f"  Medium Severity: {medium_count} (score 51-74)")
-        print(f"  Low Severity: {low_count} (score < 50)")
-        print(f"  Session ID: {session_id}")
-        print(f"  Sample IPs: {[t['ip'] for t in fresh_threats[:3]]}")
-        
-        # Get registry stats
-        stats = get_registry_stats()
-        print(f"  Total Unique IPs Generated (All Time): {stats['total_unique_ips']}")
-        print("-"*80 + "\n")
-        
-        # STEP 7: Return threats with no-cache headers
-        response = jsonify(fresh_threats)
+
+        response = jsonify(selected)
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
-        
-        print(f"[SUCCESS] ✅ Returning {len(fresh_threats)} fresh synthetic threats")
-        print("="*80 + "\n")
-        
         return response
-        
+
     except Exception as e:
-        print(f"[ERROR] ❌ Failed to generate synthetic threats: {e}")
+        print(f"[ERROR] Failed to return live threats: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({
-            "error": "Failed to generate threats",
+            "error": "Failed to load threats",
             "message": str(e)
         }), 500
 
@@ -1048,11 +1142,8 @@ def reset_shown_threats():
         
         # Optionally clear the IP registry (use with caution)
         reset_registry = request.json.get("reset_registry", False) if request.json else False
-        
         if reset_registry:
-            from threat_generator import clear_ip_registry
-            clear_ip_registry()
-            print(f"[API] ⚠️ Cleared IP registry - all IPs can be reused")
+            print("[API] Registry reset requested, but the live cache is now driven by OTX fetches and database deduplication.")
         
         print(f"[API] ✅ Reset complete - cleared {deleted_count} displayed threats")
         
@@ -1070,21 +1161,22 @@ def reset_shown_threats():
 def get_threat_stats():
     """Get statistics about the threat generation system."""
     try:
-        from threat_generator import get_registry_stats
-        
         # Get database stats
         total_displayed = db.session.query(DisplayedThreat).count()
         total_blocked = db.session.query(BlockedThreat).filter_by(is_active=True).count()
         
-        # Get registry stats
-        registry_stats = get_registry_stats()
+        try:
+            with open(THREATS_OUTPUT, "r", encoding="utf-8") as f:
+                cached_threats = json.load(f)
+        except Exception:
+            cached_threats = []
         
         stats = {
             "displayed_threats_count": total_displayed,
             "blocked_threats_count": total_blocked,
-            "unique_ips_generated": registry_stats["total_unique_ips"],
-            "generation_sessions": registry_stats["session_counter"],
-            "sample_ips": registry_stats["sample_ips"]
+            "unique_ips_generated": len({t.get("ip") or t.get("ip_address") or t.get("indicator") for t in cached_threats if (t.get("ip") or t.get("ip_address") or t.get("indicator"))}),
+            "generation_sessions": 0,
+            "sample_ips": [t.get("ip") or t.get("ip_address") or t.get("indicator") for t in cached_threats[:5] if (t.get("ip") or t.get("ip_address") or t.get("indicator"))]
         }
         
         return jsonify(stats)
@@ -1494,7 +1586,12 @@ def send_notification(current_user):
             expires_at=datetime.utcnow() + timedelta(hours=24)
         )
         db.session.add(block_token)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            token = None
+            print(f"[NOTIFY] Failed to persist block token for manual notification: {e}")
 
     # Build HTML email via template with block button (only if IP exists)
     base_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
@@ -1526,11 +1623,31 @@ def send_notification(current_user):
         is_premium=is_premium
     )
 
+    fallback_sent = False
+    if not email_sent:
+        fallback_body = (
+            f"Security Alert\n\n"
+            f"Threat Type: {threat_type}\n"
+            f"Risk Score: {risk_score}\n"
+            f"Severity: {risk_category}\n"
+            f"Indicator: {ip_address if ip_address else 'N/A'}\n"
+            f"Summary: {summary}\n"
+        )
+        # Fallback sender also stores notification in DB for dashboard visibility.
+        fallback_sent = send_email_notification(
+            to_email=user_email,
+            subject=subject,
+            body=fallback_body,
+            user_id=user.id,
+        )
+
+    send_success = bool(email_sent or fallback_sent)
+
     # Log email action regardless of SMTP success
     notification_key = ip_address if has_valid_ip else f"{threat_type}_{risk_score}"
     action_log = ThreatActionLog(
         user_id=user.id,
-        action='email_sent',
+        action='email_sent' if send_success else 'email_failed',
         ip_address=notification_key,
         performed_by_user_id=current_user.id,
         details=json.dumps({
@@ -1538,13 +1655,21 @@ def send_notification(current_user):
             'risk_score': risk_score,
             'via': 'manual_send_endpoint',
             'smtp_success': email_sent,
+            'fallback_success': fallback_sent,
             'has_ip': has_valid_ip
         })
     )
     db.session.add(action_log)
     db.session.commit()
 
-    return jsonify({"message": "Notification sent", "email_sent": bool(email_sent)}), 200
+    if send_success:
+        return jsonify({"message": "Notification sent", "email_sent": True}), 200
+
+    return jsonify({
+        "message": "Failed to send notification email",
+        "email_sent": False,
+        "error": send_email_notification.last_error or "SMTP delivery failed"
+    }), 502
 
 # --- Website Monitoring: Add URL ---
 @app.route("/api/websites", methods=["POST"])
@@ -2361,10 +2486,9 @@ def admin_auto_block_threats(current_user):
         invalid_ips = []
         skipped_count = 0
         
-        # Process threats ONE BY ONE with delay
-        import time
-        block_delay = float(os.getenv("AUTO_BLOCK_DELAY", "10"))  # seconds between blocks
-        max_blocks = int(os.getenv("AUTO_BLOCK_MAX_PER_CYCLE", "5"))  # max blocks per cycle
+        # Process one-by-one from dashboard (default 1 per request for predictable UX).
+        block_delay = 0.0
+        max_blocks = int(os.getenv("ADMIN_AUTO_BLOCK_PER_REQUEST", "1"))
         
         blocked_this_cycle = 0
         
@@ -2463,11 +2587,14 @@ def admin_auto_block_threats(current_user):
                 })
                 
                 blocked_this_cycle += 1
+
+                if blocked_this_cycle >= max_blocks:
+                    print(f"[AUTO-BLOCK] Reached per-request limit ({max_blocks}), stopping")
+                    break
                 
-                # Delay before next block (one-by-one blocking)
+                # No per-IP sleep: block immediately for faster response.
                 if blocked_this_cycle < max_blocks and (idx + 1) < len(threats_to_block):
-                    print(f"⏳ Waiting {block_delay}s before next block...")
-                    time.sleep(block_delay)
+                    print(f"[AUTO-BLOCK] Continuing immediately to next block (delay={block_delay}s)")
                 
             except Exception as e:
                 print(f"[ERROR] [BLOCK] Error processing threat: {str(e)}")
@@ -3164,6 +3291,8 @@ def _send_threat_notifications(threats):
         
         # Cooldown period: Don't notify about same threat to same user within 24 hours
         NOTIFICATION_COOLDOWN = 24  # hours
+        retry_cooldown = timedelta(seconds=NOTIFICATION_RETRY_INTERVAL)
+        now = datetime.utcnow()
         
         for threat in high_risk_threats:
             try:
@@ -3185,11 +3314,14 @@ def _send_threat_notifications(threats):
                             ThreatActionLog.user_id == user.id,
                             ThreatActionLog.action == 'email_sent',
                             ThreatActionLog.ip_address == ip_address,
-                            ThreatActionLog.timestamp > datetime.utcnow() - timedelta(hours=NOTIFICATION_COOLDOWN)
+                            ThreatActionLog.timestamp > now - timedelta(hours=NOTIFICATION_COOLDOWN)
                         ).first()
                         
                         if recent_notification:
                             # Already notified about this threat recently, skip
+                            continue
+
+                        if subscription.last_notification_sent and subscription.last_notification_sent > now - retry_cooldown:
                             continue
                         
                         # Check if user is premium (for blocking capability)
@@ -3253,6 +3385,9 @@ def _send_threat_notifications(threats):
                             unsubscribe_url=unsubscribe_url,
                             is_premium=is_premium  # Pass premium status for email template
                         )
+
+                        subscription.last_notification_sent = datetime.utcnow()
+                        db.session.add(subscription)
                         
                         if email_sent:
                             notifications_sent += 1
@@ -3273,15 +3408,12 @@ def _send_threat_notifications(threats):
                                 })
                             )
                             db.session.add(action_log)
-                            subscription.last_notification_sent = datetime.utcnow()
-                            db.session.add(subscription)
-                            
                             user_type = "premium" if is_premium else "free"
                             ip_info = f"IP {ip_address}" if has_ip else f"{threat.get('type', 'threat')} (no IP)"
                             print(f"[NOTIFY] [OK] Sent alert to {user.username} ({user_type}) for {ip_info}")
                         else:
                             # Email failed - don't log as success, but continue to next user
-                            print(f"[NOTIFY] [SKIP] Email failed for {user.username}, will retry in next cycle")
+                            print(f"[NOTIFY] [SKIP] Email failed for {user.username}, will retry after {NOTIFICATION_RETRY_INTERVAL}s")
                             
                     except Exception as e:
                         print(f"[NOTIFY] Error notifying user: {str(e)}")
@@ -3352,12 +3484,12 @@ def _auto_block_high_risk_threats(threats):
         
         print(f"[AUTO-BLOCK] Found {len(high_risk_threats)} high-risk threats eligible for blocking")
         
-        # Get already blocked IPs to avoid duplicates
+        # Get already/previously blocked IPs to avoid re-blocking deactivated entries.
         blocked_ips = set()
         try:
-            existing_blocks = BlockedThreat.query.filter_by(is_active=True).all()
+            existing_blocks = BlockedThreat.query.filter_by(blocked_by='admin').all()
             blocked_ips = {block.ip_address for block in existing_blocks}
-            print(f"[AUTO-BLOCK] Currently blocked IPs: {len(blocked_ips)}")
+            print(f"[AUTO-BLOCK] Already handled admin IPs (active+inactive): {len(blocked_ips)}")
         except Exception as e:
             print(f"[AUTO-BLOCK] Warning: Could not fetch existing blocks: {e}")
         
@@ -3378,9 +3510,9 @@ def _auto_block_high_risk_threats(threats):
                 if not ip_address:
                     continue
                 
-                # Check if already blocked
+                # Never re-block an IP that admin has already handled before.
                 if ip_address in blocked_ips:
-                    print(f"[AUTO-BLOCK] [SKIP] IP already blocked: {ip_address}")
+                    print(f"[AUTO-BLOCK] [SKIP] IP already handled by admin before: {ip_address}")
                     skipped_count += 1
                     continue
                 
@@ -3444,10 +3576,9 @@ def _auto_block_high_risk_threats(threats):
                             print(f"[AUTO-BLOCK] Reached max blocks per cycle ({AUTO_BLOCK_MAX_PER_CYCLE}), stopping")
                             break
                         
-                        # Delay before next block
+                        # No per-IP sleep: block immediately for faster response.
                         if blocked_count < AUTO_BLOCK_MAX_PER_CYCLE and blocked_count < len(high_risk_threats):
-                            print(f"[AUTO-BLOCK] Waiting {AUTO_BLOCK_DELAY}s before next block...")
-                            time.sleep(AUTO_BLOCK_DELAY)
+                            print(f"[AUTO-BLOCK] Continuing immediately to next block (delay={AUTO_BLOCK_DELAY}s)")
                             
                     except Exception as e:
                         db.session.rollback()
@@ -3509,8 +3640,7 @@ def _background_updater():
                 if now_ts - _last_fetch_time >= THREATS_FETCH_INTERVAL:
                     print(f"[BACKGROUND] Fetching new threats from OTX...")
                     try:
-                        from live_threat_fetcher import fetch_live_threats
-                        fetched = fetch_live_threats(limit=THREATS_LIMIT, category=None)
+                        fetched = fetch_and_cache(limit=THREATS_LIMIT)
                         _last_fetch_time = now_ts
                         if fetched:
                             threats = fetched
@@ -3590,15 +3720,15 @@ def admin_block_threat_auto(current_user):
     if not is_valid_ip(ip_address):
         return jsonify({"error": "Invalid IP address format"}), 400
     
-    # Check if already blocked
+    # Never re-add an admin-blocked IP (even if deactivated/unblocked later)
     existing = BlockedThreat.query.filter_by(
         ip_address=ip_address,
-        is_active=True,
         blocked_by='admin'
-    ).first()
+    ).order_by(BlockedThreat.blocked_at.desc()).first()
     
     if existing:
-        return jsonify({"error": "This IP is already blocked"}), 409
+        status_label = "active" if existing.is_active else "previously deactivated"
+        return jsonify({"error": f"This IP was already handled by admin ({status_label})"}), 409
     
     # Use sync manager if available, otherwise fallback to basic blocking
     if SYNC_MANAGER_AVAILABLE:
@@ -3865,6 +3995,42 @@ def get_vm_agents_status(current_user):
         }), 200
 
 
+def ensure_default_admin_user():
+    """Ensure the documented default admin account exists for local development."""
+    default_username = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
+    default_password = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")
+    default_email = os.getenv("DEFAULT_ADMIN_EMAIL", "admin@threatguard.com")
+    default_phone = os.getenv("DEFAULT_ADMIN_PHONE", "0000000000")
+
+    admin_user = User.query.filter_by(username=default_username).first()
+    if admin_user:
+        updated = False
+        if admin_user.role != "admin":
+            admin_user.role = "admin"
+            updated = True
+        if default_password and not admin_user.check_password(default_password):
+            admin_user.set_password(default_password)
+            updated = True
+        if updated:
+            db.session.commit()
+            print(f"[DB] Updated default admin account: {default_username}")
+        else:
+            print(f"[DB] Default admin account ready: {default_username}")
+        return
+
+    admin_user = User(
+        username=default_username,
+        email=default_email,
+        phone=default_phone,
+        role="admin",
+        subscription="premium",
+    )
+    admin_user.set_password(default_password)
+    db.session.add(admin_user)
+    db.session.commit()
+    print(f"[DB] Created default admin account: {default_username}")
+
+
 # ---------------- RUN ----------------
 if __name__ == "__main__":
     # Attach endpoint-specific limits if limiter is available
@@ -3908,6 +4074,7 @@ if __name__ == "__main__":
         try:
             db.create_all()
             print("[DB] ✅ Verified all database tables exist")
+            ensure_default_admin_user()
         except Exception as e:
             print(f"[DB] ⚠️ Table creation warning: {e}")
     

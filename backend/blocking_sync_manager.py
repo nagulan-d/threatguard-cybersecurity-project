@@ -46,12 +46,15 @@ class BlockingSyncManager:
         
         # Create dedicated logger for sync operations
         self.sync_logger = logging.getLogger("sync_manager")
-        handler = logging.FileHandler(self.sync_log_file)
+        handler = logging.FileHandler(self.sync_log_file, encoding="utf-8")
         handler.setFormatter(logging.Formatter(
             '%(asctime)s - [SYNC] %(levelname)s - %(message)s'
         ))
+        self.sync_logger.handlers.clear()
         self.sync_logger.addHandler(handler)
         self.sync_logger.setLevel(logging.INFO)
+        # Prevent double logging through root handlers with non-UTF-8 streams on Windows.
+        self.sync_logger.propagate = False
         
         logger.info("BlockingSyncManager initialized")
     
@@ -157,7 +160,7 @@ class BlockingSyncManager:
                     return False, f"Windows firewall error: {windows_msg}", None
                 
                 windows_blocked = True
-                self.sync_logger.info(f"[{operation_id}] ✅ Windows host blocked")
+                self.sync_logger.info(f"[{operation_id}] [OK] Windows host blocked")
                 
                 # Step 4: Create database record
                 if self.db:
@@ -180,7 +183,7 @@ class BlockingSyncManager:
                     self.db.add(db_record)
                     self.db.flush()  # Get the ID without committing
                     
-                    self.sync_logger.info(f"[{operation_id}] ✅ Database record created (ID: {db_record.id})")
+                    self.sync_logger.info(f"[{operation_id}] [OK] Database record created (ID: {db_record.id})")
                 
                 # Step 5: Notify VM agents via WebSocket server
                 self.sync_logger.info(f"[{operation_id}] Notifying VM agents via WebSocket...")
@@ -197,14 +200,14 @@ class BlockingSyncManager:
                     }
                 })
                 if vm_blocked:
-                    self.sync_logger.info(f"[{operation_id}] ✅ VM agents notified")
+                    self.sync_logger.info(f"[{operation_id}] [OK] VM agents notified")
                 else:
                     self.sync_logger.warning(f"[{operation_id}] VM agents not notified (WS error)")
                 
                 # Step 6: Commit database transaction
                 if self.db:
                     self.db.commit()
-                    self.sync_logger.info(f"[{operation_id}] ✅ Database transaction committed")
+                    self.sync_logger.info(f"[{operation_id}] [OK] Database transaction committed")
                 
                 # Step 7: Log the action
                 if self.db and db_record:
@@ -236,13 +239,13 @@ class BlockingSyncManager:
                 elif windows_blocked:
                     success_msg += "Windows (VM sync pending)"
                 
-                self.sync_logger.info(f"[{operation_id}] ✅✅ COMPLETE - {success_msg}")
+                self.sync_logger.info(f"[{operation_id}] [COMPLETE] {success_msg}")
                 
                 return True, success_msg, db_record
             
             except Exception as e:
                 rollback_needed = True
-                self.sync_logger.error(f"[{operation_id}] ❌ Exception during block: {e}")
+                self.sync_logger.error(f"[{operation_id}] [ERROR] Exception during block: {e}")
                 
                 # Rollback database
                 if self.db:
@@ -302,7 +305,7 @@ class BlockingSyncManager:
                 
                 if windows_success:
                     windows_unblocked = True
-                    self.sync_logger.info(f"[{operation_id}] ✅ Windows host unblocked")
+                    self.sync_logger.info(f"[{operation_id}] [OK] Windows host unblocked")
                 else:
                     self.sync_logger.warning(f"[{operation_id}] Windows unblock warning: {windows_msg}")
                 
@@ -320,7 +323,7 @@ class BlockingSyncManager:
                         threat_record.unblocked_by_user_id = user_id
                         self.db.commit()
                         db_updated = True
-                        self.sync_logger.info(f"[{operation_id}] ✅ Database record updated")
+                        self.sync_logger.info(f"[{operation_id}] [OK] Database record updated")
                 
                 # Step 3: Notify VM agents
                 self.sync_logger.info(f"[{operation_id}] Notifying VM agents...")
@@ -333,7 +336,7 @@ class BlockingSyncManager:
                     }
                 })
                 if vm_notified:
-                    self.sync_logger.info(f"[{operation_id}] ✅ VM agents notified")
+                    self.sync_logger.info(f"[{operation_id}] [OK] VM agents notified")
                 else:
                     self.sync_logger.warning(f"[{operation_id}] VM agents not notified (WS error)")
                 
@@ -355,12 +358,12 @@ class BlockingSyncManager:
                     self.db.add(action_log)
                     self.db.commit()
                 
-                self.sync_logger.info(f"[{operation_id}] ✅✅ COMPLETE - Unblock successful")
+                self.sync_logger.info(f"[{operation_id}] [COMPLETE] Unblock successful")
                 
                 return True, f"IP {ip_address} unblocked successfully"
             
             except Exception as e:
-                self.sync_logger.error(f"[{operation_id}] ❌ Exception during unblock: {e}")
+                self.sync_logger.error(f"[{operation_id}] [ERROR] Exception during unblock: {e}")
                 
                 if self.db:
                     self.db.rollback()

@@ -13,6 +13,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Set, Tuple, List, Dict, Any
 import websockets
 import requests
@@ -299,6 +300,7 @@ class VMBlockingAgent:
     """Main agent for VM-side IP blocking with WebSocket sync"""
     
     def __init__(self, config_path: Path = CONFIG_FILE):
+        self.config_path = config_path
         self.config = self._load_config(config_path)
         self.iptables_manager = IPTablesManager()
         self.websocket = None
@@ -318,13 +320,23 @@ class VMBlockingAgent:
                 logger.error(f"Failed to load config: {e}")
         
         # Default configuration
+        default_host = (
+            os.getenv("THREATGUARD_HOST_IP")
+            or os.getenv("WINDOWS_HOST_IP")
+            or os.getenv("WS_SERVER_HOST")
+            or "192.168.56.1"
+        )
+        default_ws_url = os.getenv("THREATGUARD_WS_URL") or f"ws://{default_host}:8765"
+        default_api_url = os.getenv("THREATGUARD_API_URL") or f"http://{default_host}:5000"
+
         default_config = {
             "agent_id": os.uname().nodename,
-            "websocket_url": "ws://192.168.1.100:8765",  # Replace with Windows host IP
-            "api_url": "http://192.168.1.100:5000",
+            "websocket_url": default_ws_url,
+            "api_url": default_api_url,
             "heartbeat_interval": 30,
             "reconnect_delay": 5,
-            "jwt_token": None
+            "jwt_token": None,
+            "api_token": None
         }
         
         # Save default config
@@ -336,55 +348,102 @@ class VMBlockingAgent:
             logger.error(f"Failed to save default config: {e}")
         
         return default_config
+
+    def _save_config(self):
+        """Persist updated agent configuration."""
+        try:
+            with open(self.config_path, 'w') as f:
+                json.dump(self.config, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save config: {e}")
+
+    def _build_websocket_candidates(self) -> List[str]:
+        """Build a list of websocket endpoints to try in order."""
+        candidates: List[str] = []
+
+        def add_candidate(value):
+            if value and value not in candidates:
+                candidates.append(value)
+
+        add_candidate(self.config.get("websocket_url"))
+        add_candidate(os.getenv("THREATGUARD_WS_URL"))
+
+        host_env = (
+            os.getenv("THREATGUARD_HOST_IP")
+            or os.getenv("WINDOWS_HOST_IP")
+            or os.getenv("WS_SERVER_HOST")
+        )
+        if host_env:
+            add_candidate(f"ws://{host_env}:8765")
+
+        api_url = self.config.get("api_url") or os.getenv("THREATGUARD_API_URL")
+        if api_url:
+            parsed = urlparse(api_url)
+            if parsed.hostname:
+                add_candidate(f"ws://{parsed.hostname}:8765")
+
+        for fallback_host in ["192.168.56.1", "10.0.2.2", "192.168.1.100", "host.docker.internal", "127.0.0.1", "localhost"]:
+            add_candidate(f"ws://{fallback_host}:8765")
+
+        return candidates
     
     async def connect_websocket(self):
         """Connect to Windows host WebSocket server"""
-        ws_url = self.config.get("websocket_url")
         jwt_token = self.config.get("jwt_token")
+        api_token = self.config.get("api_token") or os.getenv("AGENT_API_TOKEN")
+        auth_token = api_token or jwt_token
         
-        if not jwt_token:
-            logger.error("No JWT token configured. Please set jwt_token in agent_config.json")
+        if not auth_token:
+            logger.error("No token configured. Set api_token (preferred) or jwt_token in agent_config.json")
             return
         
-        try:
-            logger.info(f"Connecting to WebSocket server: {ws_url}")
-            
-            async with websockets.connect(ws_url) as websocket:
-                self.websocket = websocket
-                
-                # Send authentication
-                await websocket.send(json.dumps({
-                    "token": jwt_token,
-                    "client_type": "vm_agent",
-                    "agent_id": self.agent_id
-                }))
-                
-                # Wait for confirmation
-                response = await websocket.recv()
-                response_data = json.loads(response)
-                
-                if response_data.get("type") == "connected":
-                    logger.info(f"✅ Connected to WebSocket server as VM agent")
-                    self.running = True
-                    
-                    # Start heartbeat task
-                    heartbeat_task = asyncio.create_task(self.send_heartbeat())
-                    
-                    # Listen for messages
-                    try:
-                        async for message in websocket:
-                            await self.handle_message(message)
-                    except websockets.exceptions.ConnectionClosed:
-                        logger.warning("WebSocket connection closed")
-                    finally:
-                        heartbeat_task.cancel()
-                        self.running = False
-                else:
-                    logger.error(f"Authentication failed: {response_data}")
-        
-        except Exception as e:
-            logger.error(f"WebSocket connection error: {e}")
-            self.running = False
+        for ws_url in self._build_websocket_candidates():
+            try:
+                logger.info(f"Connecting to WebSocket server: {ws_url}")
+
+                async with websockets.connect(ws_url, open_timeout=10, close_timeout=5) as websocket:
+                    self.websocket = websocket
+
+                    # Send authentication
+                    await websocket.send(json.dumps({
+                        "token": auth_token,
+                        "client_type": "vm_agent",
+                        "agent_id": self.agent_id
+                    }))
+
+                    # Wait for confirmation
+                    response = await websocket.recv()
+                    response_data = json.loads(response)
+
+                    if response_data.get("type") == "connected":
+                        logger.info(f"✅ Connected to WebSocket server as VM agent")
+                        self.config["websocket_url"] = ws_url
+                        self._save_config()
+                        self.running = True
+
+                        # Start heartbeat task
+                        heartbeat_task = asyncio.create_task(self.send_heartbeat())
+
+                        # Listen for messages
+                        try:
+                            async for message in websocket:
+                                await self.handle_message(message)
+                        except websockets.exceptions.ConnectionClosed:
+                            logger.warning("WebSocket connection closed")
+                        finally:
+                            heartbeat_task.cancel()
+                            self.running = False
+                        return
+
+                    logger.error(f"Authentication failed for {ws_url}: {response_data}")
+                    if response_data.get("error") == "Token expired":
+                        logger.error("JWT token expired. Use api_token in agent_config.json or refresh jwt_token.")
+            except Exception as e:
+                logger.error(f"WebSocket connection error ({ws_url}): {e}")
+                self.websocket = None
+
+        logger.error("Unable to connect to any configured WebSocket endpoint")
+        self.running = False
     
     async def handle_message(self, message: str):
         """Handle incoming WebSocket messages from host"""
